@@ -6,18 +6,30 @@ use iroh_blobs::{BlobsProtocol, store::mem::MemStore, ticket::BlobTicket};
 
 use iroh::{Endpoint, endpoint::presets};
 
+use crate::{
+    mdns,
+    protocol::{Offer, accept_transfer_offer, send_transfer_offer},
+};
+
 pub async fn run_sender(filename: &str) -> Result<()> {
     // Create an endpoint, it allows creating and accepting
     // connections in the iroh p2p world
     let endpoint = Endpoint::bind(presets::N0).await?;
 
+    let mdns = mdns::enable(&endpoint)?;
+    let receiver_addr = mdns::discover_one(&mdns).await?;
+
+    let filename_str = filename.to_string();
+    let filename: PathBuf = filename.parse()?;
+
+    let abs_path = std::path::absolute(&filename)?;
+
+    let filesize = tokio::fs::metadata(&abs_path).await?.len();
+
     // We initialize an in-memory backing store for iroh-blobs
     let store = MemStore::new();
     // Then we initialize a struct that can accept blobs requests over iroh connections
     let blobs = BlobsProtocol::new(&store, None);
-
-    let filename: PathBuf = filename.parse()?;
-    let abs_path = std::path::absolute(&filename)?;
 
     println!("Hashing file.");
 
@@ -28,8 +40,14 @@ pub async fn run_sender(filename: &str) -> Result<()> {
     let endpoint_id = endpoint.id();
     let ticket = BlobTicket::new(endpoint_id.into(), tag.hash, tag.format);
 
-    println!("File hashed. Fetch this file by running:");
-    println!("cargo run -- receive {ticket} {}", filename.display());
+    // println!("File hashed. Fetch this file by running:");
+    // println!("cargo run -- receive {ticket} {}", filename.display());
+
+    let offer = Offer {
+        filename: filename_str,
+        filesize,
+        ticket,
+    };
 
     // For sending files we build a router that accepts blobs connections & routes them
     // to the blobs protocol.
@@ -37,8 +55,12 @@ pub async fn run_sender(filename: &str) -> Result<()> {
         .accept(iroh_blobs::ALPN, blobs)
         .spawn();
 
-    tokio::signal::ctrl_c().await?;
+    let accepted = send_transfer_offer(router.endpoint(), receiver_addr, &offer).await?;
 
+    match accepted {
+        true => println!("Accepted offer"),
+        false => println!("Declined offer"),
+    }
     // Gracefully shut down the endpoint
     println!("Shutting down.");
     router.shutdown().await?;
@@ -46,35 +68,42 @@ pub async fn run_sender(filename: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn run_receiver(ticket: &str, filename: &str) -> Result<()> {
-    // We initialize an in-memory backing store for iroh-blobs
-    let store = MemStore::new();
-    let endpoint = Endpoint::bind(presets::N0).await?;
-
-    let filename: PathBuf = filename.parse()?;
-    let ticket: BlobTicket = ticket.parse()?;
-    let abs_path = std::path::absolute(filename)?;
-    // For receiving files, we create a "downloader" that allows us to fetch files
-    // from other endpoints via iroh connections
+pub async fn download(endpoint: &Endpoint, store: &MemStore, offer: Offer) -> Result<()> {
+    let abs_path = std::path::absolute(offer.filename)?;
     let downloader = store.downloader(&endpoint);
 
     println!("Starting download.");
 
     downloader
-        .download(ticket.hash(), Some(ticket.addr().id))
+        .download(offer.ticket.hash(), Some(offer.ticket.addr().id))
         .await?;
 
     println!("Finished download.");
 
     println!("Copying to destination.");
 
-    store.blobs().export(ticket.hash(), abs_path).await?;
+    store.blobs().export(offer.ticket.hash(), abs_path).await?;
 
     println!("Finished copying.");
 
     // Gracefully shut down the endpoint
     println!("Shutting down.");
-    endpoint.close().await;
+
+    Ok(())
+}
+
+pub async fn run_receiver() -> Result<()> {
+    // We initialize an in-memory backing store for iroh-blobs
+    let store = MemStore::new();
+    let endpoint = Endpoint::bind(presets::N0).await?;
+
+    let _mdns = mdns::enable(&endpoint)?;
+
+    let router = accept_transfer_offer(endpoint.clone(), store).await?;
+
+    tokio::signal::ctrl_c().await?;
+
+    router.shutdown().await?;
 
     Ok(())
 }

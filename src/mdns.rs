@@ -1,25 +1,28 @@
-use iroh::{Endpoint, endpoint::presets};
+use anyhow::Result;
+use anyhow::bail;
+use iroh::Endpoint;
+use iroh::EndpointAddr;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 
 use iroh_mdns_address_lookup::DiscoveryEvent;
 use n0_future::StreamExt;
 
-pub async fn discovery() {
-    let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-
-    let mdns = MdnsAddressLookup::builder().build(endpoint.id()).unwrap();
-    endpoint.address_lookup().unwrap().add(mdns.clone());
-
-    let mut events = mdns.subscribe().await;
-    while let Some(event) = events.next().await {
-        match event {
-            DiscoveryEvent::Discovered { endpoint_info, .. } => {
-                println!("MDNS discovered: {:?}", endpoint_info);
-            }
-            DiscoveryEvent::Expired { endpoint_id } => {
-                println!("MDNS expired: {endpoint_id}");
-            }
-            _ => {}
+pub async fn discover_one(mdns: &MdnsAddressLookup) -> Result<EndpointAddr> {
+    let mut event = mdns.subscribe().await;
+    while let Some(event) = event.next().await {
+        if let DiscoveryEvent::Discovered { endpoint_info, .. } = event {
+            return Ok(endpoint_info.into_endpoint_addr());
         }
     }
+
+    bail!("mDNS discovery stopped")
+}
+
+pub fn enable(endpoint: &Endpoint) -> Result<MdnsAddressLookup> {
+    let mdns = MdnsAddressLookup::builder()
+        .service_name("iroh-labs-airdrop")
+        .build(endpoint.id())?;
+
+    endpoint.address_lookup()?.add(mdns.clone());
+    Ok(mdns)
 }

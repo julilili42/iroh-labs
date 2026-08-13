@@ -1704,6 +1704,7 @@ dependencies = [
  "iroh-ping",
  "iroh-services",
  "iroh-tickets",
+ "n0-error",
  "n0-future",
  "tokio",
  "tracing-subscriber",

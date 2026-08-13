@@ -3,6 +3,7 @@ use anyhow::Result;
 
 mod blob;
 mod mdns;
+mod protocol;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,9 +13,7 @@ async fn main() -> Result<()> {
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match arg_refs.as_slice() {
         ["send", filename] => run_sender(filename).await?,
-        ["receive", ticket, filename] => {
-            run_receiver(ticket, filename).await?;
-        }
+        ["receive"] => run_receiver().await?,
         _ => {
             println!("Couldn't parse command line arguments: {args:?}");
             println!("Usage:");

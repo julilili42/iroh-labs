@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use iroh::protocol::Router;
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore, ticket::BlobTicket};
+
+use iroh::{Endpoint, endpoint::presets};
 
 pub async fn run_sender(filename: &str) -> Result<()> {
     // Create an endpoint, it allows creating and accepting

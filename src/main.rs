@@ -1,8 +1,8 @@
+use crate::blob::{run_receiver, run_sender};
 use anyhow::Result;
 
-use crate::blob::{run_receiver, run_sender};
-
 mod blob;
+mod mdns;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -1,0 +1,31 @@
+use anyhow::Result;
+
+use crate::blob::{run_receiver, run_sender};
+
+mod blob;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Grab all passed in arguments, the first one is the binary itself, so we skip it.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Convert to &str, so we can pattern-match easily:
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match arg_refs.as_slice() {
+        ["send", filename] => run_sender(filename).await?,
+        ["receive", ticket, filename] => {
+            run_receiver(ticket, filename).await?;
+        }
+        _ => {
+            println!("Couldn't parse command line arguments: {args:?}");
+            println!("Usage:");
+            println!("    # to send:");
+            println!("    cargo run -- send [FILE]");
+            println!("    # this will print a ticket.");
+            println!();
+            println!("    # to receive:");
+            println!("    cargo run -- receive [TICKET] [FILE]");
+        }
+    }
+
+    Ok(())
+}

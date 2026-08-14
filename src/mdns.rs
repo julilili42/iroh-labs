@@ -7,6 +7,15 @@ use iroh_mdns_address_lookup::MdnsAddressLookup;
 use iroh_mdns_address_lookup::DiscoveryEvent;
 use n0_future::StreamExt;
 
+pub fn enable(endpoint: &Endpoint) -> Result<MdnsAddressLookup> {
+    let mdns = MdnsAddressLookup::builder()
+        .service_name("iroh-airdrop")
+        .build(endpoint.id())?;
+
+    endpoint.address_lookup()?.add(mdns.clone());
+    Ok(mdns)
+}
+
 pub async fn discover_one(mdns: &MdnsAddressLookup) -> Result<EndpointAddr> {
     let mut event = mdns.subscribe().await;
     while let Some(event) = event.next().await {
@@ -16,13 +25,4 @@ pub async fn discover_one(mdns: &MdnsAddressLookup) -> Result<EndpointAddr> {
     }
 
     bail!("mDNS discovery stopped")
-}
-
-pub fn enable(endpoint: &Endpoint) -> Result<MdnsAddressLookup> {
-    let mdns = MdnsAddressLookup::builder()
-        .service_name("iroh-labs-airdrop")
-        .build(endpoint.id())?;
-
-    endpoint.address_lookup()?.add(mdns.clone());
-    Ok(mdns)
 }

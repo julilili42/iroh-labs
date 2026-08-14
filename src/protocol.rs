@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use iroh::{
     Endpoint, EndpointAddr,
     endpoint::{Connection, RecvStream, SendStream},
-    protocol::{AcceptError, ProtocolHandler, Router},
+    protocol::{AcceptError, ProtocolHandler},
 };
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket};
 use n0_error::e;
@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::blob::download;
 
-const ALPN: &[u8] = b"iroh-labs/transfer-offer/0";
+pub const ALPN: &[u8] = b"iroh-labs/transfer-offer/0";
 
 fn accept_error(error: anyhow::Error) -> AcceptError {
     AcceptError::from_boxed(error.into_boxed_dyn_error())
@@ -34,6 +34,16 @@ pub struct Offer {
     pub filename: String,
     pub filesize: u64,
     pub ticket: BlobTicket,
+}
+
+impl Offer {
+    pub fn new(filename: &str, filesize: u64, ticket: &BlobTicket) -> Self {
+        Self {
+            filename: filename.to_string(),
+            filesize,
+            ticket: ticket.clone(),
+        }
+    }
 }
 
 impl Offer {
@@ -78,12 +88,21 @@ impl Offer {
 }
 
 #[derive(Debug, Clone)]
-struct OfferHandler {
-    endpoint: Endpoint,
-    store: MemStore,
+pub struct OfferProtocol {
+    pub endpoint: Endpoint,
+    pub store: MemStore,
 }
 
-impl ProtocolHandler for OfferHandler {
+impl OfferProtocol {
+    pub fn new(endpoint: &Endpoint, store: &MemStore) -> Self {
+        Self {
+            endpoint: endpoint.clone(),
+            store: store.clone(),
+        }
+    }
+}
+
+impl ProtocolHandler for OfferProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let (mut send, mut recv) = connection.accept_bi().await?;
 
@@ -106,16 +125,6 @@ impl ProtocolHandler for OfferHandler {
     }
 }
 
-pub async fn accept_transfer_offer(endpoint: Endpoint, store: MemStore) -> Result<Router> {
-    let handler = OfferHandler {
-        endpoint: endpoint.clone(),
-        store: store.clone(),
-    };
-
-    let router = Router::builder(endpoint).accept(ALPN, handler).spawn();
-
-    Ok(router)
-}
 pub async fn send_transfer_offer(
     endpoint: &Endpoint,
     addr: EndpointAddr,

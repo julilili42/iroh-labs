@@ -1,4 +1,4 @@
-use crate::blob::{run_receiver, run_sender};
+use crate::blob::{run_receiver, run_sender, start_iroh};
 use anyhow::Result;
 
 mod blob;
@@ -11,9 +11,12 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Convert to &str, so we can pattern-match easily:
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let (endpoint, store, router) = start_iroh().await?;
+
     match arg_refs.as_slice() {
-        ["send", filename] => run_sender(filename).await?,
-        ["receive"] => run_receiver().await?,
+        ["send", filename] => run_sender(filename.to_string(), endpoint, router, &store).await?,
+        ["receive"] => run_receiver(endpoint, router).await?,
         _ => {
             println!("Couldn't parse command line arguments: {args:?}");
             println!("Usage:");

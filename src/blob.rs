@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::Result;
 use iroh::protocol::Router;
@@ -8,52 +8,51 @@ use iroh::{Endpoint, endpoint::presets};
 
 use crate::{
     mdns,
-    protocol::{Offer, accept_transfer_offer, send_transfer_offer},
+    protocol::{self, Offer, OfferProtocol, send_transfer_offer},
 };
 
-pub async fn run_sender(filename: &str) -> Result<()> {
+pub async fn start_iroh() -> Result<(Endpoint, MemStore, Router)> {
     // Create an endpoint, it allows creating and accepting
     // connections in the iroh p2p world
     let endpoint = Endpoint::bind(presets::N0).await?;
-
-    let mdns = mdns::enable(&endpoint)?;
-    let receiver_addr = mdns::discover_one(&mdns).await?;
-
-    let filename_str = filename.to_string();
-    let filename: PathBuf = filename.parse()?;
-
-    let abs_path = std::path::absolute(&filename)?;
-
-    let filesize = tokio::fs::metadata(&abs_path).await?.len();
-
     // We initialize an in-memory backing store for iroh-blobs
     let store = MemStore::new();
     // Then we initialize a struct that can accept blobs requests over iroh connections
-    let blobs = BlobsProtocol::new(&store, None);
+    let blobs_handler = BlobsProtocol::new(&store, None);
+    let offer_handler = OfferProtocol::new(&endpoint, &store);
+
+    // For sending files we build a router that accepts blobs connections & routes them
+    // to the blobs protocol.
+    let router = Router::builder(endpoint.clone())
+        .accept(iroh_blobs::ALPN, blobs_handler)
+        .accept(protocol::ALPN, offer_handler)
+        .spawn();
+
+    Ok((endpoint, store, router))
+}
+
+pub async fn run_sender(
+    filename: String,
+    endpoint: Endpoint,
+    router: Router,
+    store: &MemStore,
+) -> Result<()> {
+    let mdns = mdns::enable(&endpoint)?;
+    let receiver_addr = mdns::discover_one(&mdns).await?;
+
+    let abs_path = std::path::absolute(Path::new(&filename))?;
+    let filesize = tokio::fs::metadata(&abs_path).await?.len();
 
     println!("Hashing file.");
 
     // When we import a blob, we get back a "tag" that refers to said blob in the store
     // and allows us to control when/if it gets garbage-collected
     let tag = store.blobs().add_path(abs_path).await?;
+    let ticket = BlobTicket::new(endpoint.id().into(), tag.hash, tag.format);
 
-    let endpoint_id = endpoint.id();
-    let ticket = BlobTicket::new(endpoint_id.into(), tag.hash, tag.format);
+    println!("File hashed.");
 
-    // println!("File hashed. Fetch this file by running:");
-    // println!("cargo run -- receive {ticket} {}", filename.display());
-
-    let offer = Offer {
-        filename: filename_str,
-        filesize,
-        ticket,
-    };
-
-    // For sending files we build a router that accepts blobs connections & routes them
-    // to the blobs protocol.
-    let router = Router::builder(endpoint)
-        .accept(iroh_blobs::ALPN, blobs)
-        .spawn();
+    let offer = Offer::new(&filename, filesize, &ticket);
 
     let accepted = send_transfer_offer(router.endpoint(), receiver_addr, &offer).await?;
 
@@ -92,14 +91,9 @@ pub async fn download(endpoint: &Endpoint, store: &MemStore, offer: Offer) -> Re
     Ok(())
 }
 
-pub async fn run_receiver() -> Result<()> {
+pub async fn run_receiver(endpoint: Endpoint, router: Router) -> Result<()> {
     // We initialize an in-memory backing store for iroh-blobs
-    let store = MemStore::new();
-    let endpoint = Endpoint::bind(presets::N0).await?;
-
     let _mdns = mdns::enable(&endpoint)?;
-
-    let router = accept_transfer_offer(endpoint.clone(), store).await?;
 
     tokio::signal::ctrl_c().await?;
 

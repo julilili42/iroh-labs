@@ -1,11 +1,10 @@
-use std::env;
+use std::{env, result::Result::Ok};
 
 use anyhow::{Result, anyhow};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_ping::Ping;
 use iroh_services::Client;
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
-use std::result::Result::Ok;
 
 async fn run_receiver() -> Result<()> {
     let endpoint = Endpoint::bind(presets::N0).await?;

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use iroh::{
-    Endpoint, EndpointAddr,
+    Endpoint,
     endpoint::{Connection, RecvStream, SendStream},
     protocol::{AcceptError, ProtocolHandler},
 };
@@ -10,15 +10,15 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::blob::download;
 
-pub const ALPN: &[u8] = b"iroh-labs/transfer-offer/0";
+pub const ALPN: &[u8] = b"iroh-labs/transfer-offer/1";
 
 fn accept_error(error: anyhow::Error) -> AcceptError {
     AcceptError::from_boxed(error.into_boxed_dyn_error())
 }
 
-async fn confirm(offer: &Offer) -> std::io::Result<bool> {
+async fn confirm(offer: &Offer, send: &mut SendStream) -> std::io::Result<bool> {
     println!(
-        "{} ({} Bytes) annehmen? [y/n]",
+        "{} ({} Bytes) accept? [y/n]",
         offer.filename, offer.filesize
     );
 
@@ -27,7 +27,9 @@ async fn confirm(offer: &Offer) -> std::io::Result<bool> {
         .read_line(&mut answer)
         .await?;
 
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y"))
+    let decision = matches!(answer.trim().to_ascii_lowercase().as_str(), "y");
+    send.write_u8(u8::from(decision)).await?;
+    Ok(decision)
 }
 
 pub struct Offer {
@@ -112,35 +114,48 @@ impl ProtocolHandler for OfferProtocol {
             return Err(e!(AcceptError::NotAllowed));
         }
 
-        let accepted = confirm(&offer).await.map_err(AcceptError::from_err)?;
+        let accepted = confirm(&offer, &mut send)
+            .await
+            .map_err(AcceptError::from_err)?;
 
         if accepted {
-            download(&self.endpoint, &self.store, offer)
+            download(&self.endpoint, &self.store, offer, &mut send)
                 .await
                 .map_err(accept_error)?;
+        } else {
+            send.finish()?;
         }
-        send.write_u8(u8::from(accepted)).await?;
-        send.finish()?;
+
+        connection.closed().await;
         Ok(())
     }
 }
 
+pub async fn download_finished(recv: &mut RecvStream) -> Result<()> {
+    let byte = recv
+        .read_u8()
+        .await
+        .context("download byte was not received")?;
+    ensure!(byte == 1, "download failed invalid response {byte}");
+    Ok(())
+}
+
 pub async fn send_transfer_offer(
-    endpoint: &Endpoint,
-    addr: EndpointAddr,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
     offer: &Offer,
 ) -> Result<bool> {
-    // open connection to the receiving endpoint
-    let conn = endpoint.connect(addr, ALPN).await?;
+    offer.write_to(send).await?;
 
-    // receiver must be able to accept / decline transfer
-    let (mut send, mut recv) = conn.open_bi().await?;
-
-    offer.write_to(&mut send).await?;
-
-    Ok(match recv.read_u8().await? {
-        0 => false,
-        1 => true,
-        value => anyhow::bail!("invalid response {value}"),
-    })
+    Ok(
+        match recv
+            .read_u8()
+            .await
+            .context("accept byte was not received")?
+        {
+            0 => false,
+            1 => true,
+            value => anyhow::bail!("invalid response {value}"),
+        },
+    )
 }

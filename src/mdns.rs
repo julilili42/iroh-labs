@@ -1,10 +1,6 @@
-use anyhow::Result;
-use anyhow::bail;
-use iroh::Endpoint;
-use iroh::EndpointAddr;
-use iroh_mdns_address_lookup::MdnsAddressLookup;
-
-use iroh_mdns_address_lookup::DiscoveryEvent;
+use anyhow::{Result, bail};
+use iroh::{Endpoint, EndpointAddr};
+use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use n0_future::StreamExt;
 
 pub fn enable(endpoint: &Endpoint) -> Result<MdnsAddressLookup> {

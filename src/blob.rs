@@ -1,14 +1,18 @@
 use std::path::Path;
 
 use anyhow::Result;
-use iroh::protocol::Router;
+use iroh::{
+    Endpoint,
+    endpoint::{SendStream, presets},
+    protocol::Router,
+};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore, ticket::BlobTicket};
-
-use iroh::{Endpoint, endpoint::presets};
+use n0_error::StackResultExt;
+use tokio::io::AsyncWriteExt;
 
 use crate::{
     mdns,
-    protocol::{self, Offer, OfferProtocol, send_transfer_offer},
+    protocol::{self, Offer, OfferProtocol, download_finished, send_transfer_offer},
 };
 
 pub async fn start_iroh() -> Result<(Endpoint, MemStore, Router)> {
@@ -54,10 +58,16 @@ pub async fn run_sender(
 
     let offer = Offer::new(&filename, filesize, &ticket);
 
-    let accepted = send_transfer_offer(router.endpoint(), receiver_addr, &offer).await?;
+    let conn = endpoint.connect(receiver_addr, protocol::ALPN).await?;
+    let (mut send, mut recv) = conn.open_bi().await?;
 
+    let accepted = send_transfer_offer(&mut send, &mut recv, &offer).await?;
     match accepted {
-        true => println!("Accepted offer"),
+        true => {
+            println!("Accepted offer");
+            download_finished(&mut recv).await?;
+            println!("Download finished");
+        }
         false => println!("Declined offer"),
     }
     // Gracefully shut down the endpoint
@@ -67,27 +77,41 @@ pub async fn run_sender(
     Ok(())
 }
 
-pub async fn download(endpoint: &Endpoint, store: &MemStore, offer: Offer) -> Result<()> {
+pub async fn download(
+    endpoint: &Endpoint,
+    store: &MemStore,
+    offer: Offer,
+    send: &mut SendStream,
+) -> Result<()> {
     let abs_path = std::path::absolute(offer.filename)?;
-    let downloader = store.downloader(&endpoint);
+    let downloader = store.downloader(endpoint);
 
     println!("Starting download.");
 
     downloader
         .download(offer.ticket.hash(), Some(offer.ticket.addr().id))
-        .await?;
+        .await
+        .context("failed to download")?;
 
     println!("Finished download.");
 
     println!("Copying to destination.");
 
-    store.blobs().export(offer.ticket.hash(), abs_path).await?;
+    store
+        .blobs()
+        .export(offer.ticket.hash(), abs_path)
+        .await
+        .context("failed to export")?;
 
     println!("Finished copying.");
 
+    send.write_u8(1)
+        .await
+        .context("failed to send download byte")?;
+    send.finish()?;
+
     // Gracefully shut down the endpoint
     println!("Shutting down.");
-
     Ok(())
 }
 
@@ -98,6 +122,5 @@ pub async fn run_receiver(endpoint: Endpoint, router: Router) -> Result<()> {
     tokio::signal::ctrl_c().await?;
 
     router.shutdown().await?;
-
     Ok(())
 }

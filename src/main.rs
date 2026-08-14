@@ -1,5 +1,6 @@
-use crate::blob::{run_receiver, run_sender, start_iroh};
 use anyhow::Result;
+
+use crate::blob::{run_receiver, run_sender, start_iroh};
 
 mod blob;
 mod mdns;
@@ -7,6 +8,7 @@ mod protocol;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
     // Grab all passed in arguments, the first one is the binary itself, so we skip it.
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Convert to &str, so we can pattern-match easily:

@@ -1,10 +1,41 @@
+use std::{
+    env,
+    path::{self, PathBuf},
+};
+
 use anyhow::Result;
+use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
 
-use crate::blob::{run_receiver, run_sender, start_iroh};
+use crate::{
+    receiver::{OfferProtocol, run_receiver},
+    sender::run_sender,
+};
 
-mod blob;
 mod mdns;
 mod protocol;
+mod receiver;
+mod sender;
+
+pub async fn start_iroh(download_dir: PathBuf) -> Result<(Endpoint, MemStore, Router)> {
+    // Create an endpoint, it allows creating and accepting
+    // connections in the iroh p2p world
+    let endpoint = Endpoint::bind(presets::N0).await?;
+    // We initialize an in-memory backing store for iroh-blobs
+    let store = MemStore::new();
+    // Then we initialize a struct that can accept blobs requests over iroh connections
+    let blobs_handler = BlobsProtocol::new(&store, None);
+    let offer_handler = OfferProtocol::new(&endpoint, &store, &download_dir);
+
+    // For sending files we build a router that accepts blobs connections & routes them
+    // to the blobs protocol.
+    let router = Router::builder(endpoint.clone())
+        .accept(iroh_blobs::ALPN, blobs_handler)
+        .accept(protocol::ALPN, offer_handler)
+        .spawn();
+
+    Ok((endpoint, store, router))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -14,20 +45,20 @@ async fn main() -> Result<()> {
     // Convert to &str, so we can pattern-match easily:
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    let (endpoint, store, router) = start_iroh().await?;
+    let download_dir = match arg_refs.as_slice() {
+        ["receive", dir] => path::absolute(dir)?,
+        _ => env::current_dir()?,
+    };
+
+    let (endpoint, store, router) = start_iroh(download_dir).await?;
 
     match arg_refs.as_slice() {
         ["send", filename] => run_sender(filename.to_string(), endpoint, router, &store).await?,
-        ["receive"] => run_receiver(endpoint, router).await?,
+        ["receive", _] => run_receiver(endpoint, router).await?,
         _ => {
-            println!("Couldn't parse command line arguments: {args:?}");
             println!("Usage:");
-            println!("    # to send:");
-            println!("    cargo run -- send [FILE]");
-            println!("    # this will print a ticket.");
-            println!();
-            println!("    # to receive:");
-            println!("    cargo run -- receive [TICKET] [FILE]");
+            println!("    cargo run -- send <FILE>");
+            println!("    cargo run -- receive <DOWNLOAD_DIR>");
         }
     }
 

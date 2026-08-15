@@ -7,7 +7,8 @@ use n0_error::StackResultExt;
 
 use crate::{
     mdns,
-    protocol::{self, Offer, download_finished, send_transfer_offer},
+    protocol::{self, Offer, download_finished, transfer_decision},
+    protocol::{DecisionStatus, DownloadStatus},
 };
 
 pub async fn run_sender(
@@ -42,18 +43,30 @@ pub async fn run_sender(
     let conn = endpoint.connect(receiver_addr, protocol::ALPN).await?;
     let (mut send, mut recv) = conn.open_bi().await?;
 
-    let accepted = send_transfer_offer(&mut send, &mut recv, &offer).await?;
-    match accepted {
-        true => {
-            println!("Accepted offer");
-            download_finished(&mut recv).await?;
-            println!("Download finished");
-        }
-        false => println!("Declined offer"),
-    }
-    // Gracefully shut down the endpoint
-    println!("Shutting down.");
-    router.shutdown().await?;
+    offer.write_to(&mut send).await?;
 
-    Ok(())
+    match transfer_decision(&mut recv).await? {
+        DecisionStatus::Accepted => println!("Accepted offer."),
+        DecisionStatus::Declined => {
+            println!("Declined offer.");
+            println!("Shutting down.");
+            router.shutdown().await?;
+            return Ok(());
+        }
+    }
+
+    match download_finished(&mut recv).await? {
+        DownloadStatus::Completed => {
+            println!("Download finished.");
+            println!("Shutting down.");
+            router.shutdown().await?;
+            Ok(())
+        }
+        DownloadStatus::Failed => {
+            println!("Download failed.");
+            println!("Shutting down.");
+            router.shutdown().await?;
+            anyhow::bail!("Failed to download.")
+        }
+    }
 }

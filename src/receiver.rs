@@ -3,15 +3,18 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use iroh::{
     Endpoint,
-    endpoint::{Connection, SendStream},
+    endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use iroh_blobs::{api::downloader::DownloadProgressItem, store::mem::MemStore};
 use n0_error::{StackResultExt, e};
 use n0_future::StreamExt;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::{mdns, protocol::Offer};
+use crate::{
+    mdns,
+    protocol::{DecisionStatus, DownloadStatus, Offer},
+};
 
 pub async fn run_receiver(endpoint: Endpoint, router: Router) -> Result<()> {
     let _mdns = mdns::enable(&endpoint)?;
@@ -49,26 +52,34 @@ impl ProtocolHandler for OfferProtocol {
             return Err(e!(AcceptError::NotAllowed));
         }
 
-        let accepted = confirm(&offer, &mut send)
-            .await
-            .map_err(AcceptError::from_err)?;
+        match confirm(&offer).await {
+            Ok(true) => {
+                send.write_u8(DecisionStatus::Accepted as u8).await?;
 
-        if accepted {
-            download(
-                &self.endpoint,
-                &self.store,
-                &self.download_dir,
-                offer,
-                &mut send,
-            )
-            .await
-            .map_err(accept_error)?;
-        } else {
-            send.finish()?;
+                if let Err(e) =
+                    download(&self.endpoint, &self.store, &self.download_dir, offer).await
+                {
+                    let _ = send.write_u8(DownloadStatus::Failed as u8).await;
+                    let _ = send.finish();
+                    connection.closed().await;
+                    return Err(accept_error(e));
+                }
+
+                send.write_u8(DownloadStatus::Completed as u8)
+                    .await
+                    .context("Failed to send download byte")?;
+                send.finish()?;
+                connection.closed().await;
+                Ok(())
+            }
+            Ok(false) | Err(_) => {
+                println!("No transfer executed.");
+                let _ = send.write_u8(DecisionStatus::Declined as u8).await;
+                let _ = send.finish();
+                connection.closed().await;
+                Err(e!(AcceptError::NotAllowed))
+            }
         }
-
-        connection.closed().await;
-        Ok(())
     }
 }
 
@@ -81,7 +92,6 @@ pub async fn download(
     store: &MemStore,
     download_dir: &Path,
     offer: Offer,
-    send: &mut SendStream,
 ) -> Result<()> {
     let filename = Path::new(&offer.filename)
         .file_name()
@@ -122,29 +132,18 @@ pub async fn download(
         .context("failed to export")?;
 
     println!("Finished copying.");
-
-    send.write_u8(1)
-        .await
-        .context("failed to send download byte")?;
-    send.finish()?;
-
-    // Gracefully shut down the endpoint
-    println!("Shutting down.");
     Ok(())
 }
 
-pub async fn confirm(offer: &Offer, send: &mut SendStream) -> std::io::Result<bool> {
+pub async fn confirm(offer: &Offer) -> io::Result<bool> {
     println!(
         "{} ({} Bytes) accept? [y/n]",
         offer.filename, offer.filesize
     );
 
     let mut answer = String::new();
-    BufReader::new(tokio::io::stdin())
-        .read_line(&mut answer)
-        .await?;
+    BufReader::new(io::stdin()).read_line(&mut answer).await?;
 
     let decision = matches!(answer.trim().to_ascii_lowercase().as_str(), "y");
-    send.write_u8(u8::from(decision)).await?;
     Ok(decision)
 }

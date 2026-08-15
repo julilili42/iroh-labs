@@ -3,7 +3,7 @@ use iroh::endpoint::{RecvStream, SendStream};
 use iroh_blobs::ticket::BlobTicket;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub const ALPN: &[u8] = b"iroh-labs/transfer-offer/1";
+pub const ALPN: &[u8] = b"iroh-labs/transfer-offer/2";
 
 pub struct Offer {
     pub filename: String,
@@ -62,31 +62,52 @@ impl Offer {
     }
 }
 
-pub async fn send_transfer_offer(
-    send: &mut SendStream,
-    recv: &mut RecvStream,
-    offer: &Offer,
-) -> Result<bool> {
-    offer.write_to(send).await?;
-
-    Ok(
-        match recv
-            .read_u8()
-            .await
-            .context("accept byte was not received")?
-        {
-            0 => false,
-            1 => true,
-            value => anyhow::bail!("invalid response {value}"),
-        },
-    )
+#[derive(Debug, PartialEq)]
+pub enum DecisionStatus {
+    Declined = 0,
+    Accepted = 1,
+}
+pub enum DownloadStatus {
+    Completed = 2,
+    Failed = 3,
 }
 
-pub async fn download_finished(recv: &mut RecvStream) -> Result<()> {
+impl TryFrom<u8> for DecisionStatus {
+    type Error = anyhow::Error;
+    fn try_from(value: u8) -> std::prelude::v1::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(DecisionStatus::Declined),
+            1 => Ok(DecisionStatus::Accepted),
+            _ => anyhow::bail!("invalid transfer status"),
+        }
+    }
+}
+impl TryFrom<u8> for DownloadStatus {
+    type Error = anyhow::Error;
+    fn try_from(value: u8) -> std::prelude::v1::Result<Self, Self::Error> {
+        match value {
+            2 => Ok(DownloadStatus::Completed),
+            3 => Ok(DownloadStatus::Failed),
+            _ => anyhow::bail!("invalid transfer status"),
+        }
+    }
+}
+
+pub async fn transfer_decision(recv: &mut RecvStream) -> Result<DecisionStatus> {
+    let byte = recv
+        .read_u8()
+        .await
+        .context("accept byte was not received")?;
+
+    DecisionStatus::try_from(byte)
+}
+
+pub async fn download_finished(recv: &mut RecvStream) -> Result<DownloadStatus> {
     let byte = recv
         .read_u8()
         .await
         .context("download byte was not received")?;
-    ensure!(byte == 1, "download failed invalid response {byte}");
-    Ok(())
+
+    let status = DownloadStatus::try_from(byte)?;
+    Ok(status)
 }

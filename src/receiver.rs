@@ -11,14 +11,9 @@ use n0_error::{StackResultExt, e};
 use n0_future::StreamExt;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::{
-    mdns,
-    protocol::{DecisionStatus, DownloadStatus, Offer},
-};
+use crate::protocol::{DecisionStatus, DownloadStatus, Offer};
 
-pub async fn run_receiver(endpoint: Endpoint, router: Router) -> Result<()> {
-    let _mdns = mdns::enable(&endpoint)?;
-
+pub async fn run_receiver(router: Router) -> Result<()> {
     tokio::signal::ctrl_c().await?;
 
     router.shutdown().await?;

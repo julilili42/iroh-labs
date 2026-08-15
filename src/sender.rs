@@ -1,12 +1,11 @@
 use std::path::Path;
 
 use anyhow::Result;
-use iroh::{Endpoint, protocol::Router};
+use iroh::{Endpoint, EndpointAddr, protocol::Router};
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket};
 use n0_error::StackResultExt;
 
 use crate::{
-    mdns,
     protocol::{self, Offer, download_finished, transfer_decision},
     protocol::{DecisionStatus, DownloadStatus},
 };
@@ -16,10 +15,8 @@ pub async fn run_sender(
     endpoint: Endpoint,
     router: Router,
     store: &MemStore,
+    endpoint_addr: EndpointAddr,
 ) -> Result<()> {
-    let mdns = mdns::enable(&endpoint)?;
-    let receiver_addr = mdns::discover_one(&mdns).await?;
-
     let file_path = Path::new(&filename);
     let safe_name = file_path
         .file_name()
@@ -40,7 +37,7 @@ pub async fn run_sender(
 
     let offer = Offer::new(safe_name, filesize, &ticket);
 
-    let conn = endpoint.connect(receiver_addr, protocol::ALPN).await?;
+    let conn = endpoint.connect(endpoint_addr, protocol::ALPN).await?;
     let (mut send, mut recv) = conn.open_bi().await?;
 
     offer.write_to(&mut send).await?;

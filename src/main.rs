@@ -9,9 +9,8 @@ use crate::{
     sender::run_sender,
 };
 use anyhow::Result;
-use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use iroh::{Endpoint, EndpointAddr, endpoint::presets, endpoint_info::UserData, protocol::Router};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
-use iroh_mdns_address_lookup::MdnsAddressLookup;
 use tokio::sync::{mpsc, watch};
 mod cli;
 mod mdns;
@@ -25,8 +24,8 @@ pub async fn start_iroh(
     Endpoint,
     MemStore,
     Router,
-    MdnsAddressLookup,
     mpsc::Receiver<OfferRequest>,
+    watch::Receiver<Vec<(UserData, EndpointAddr)>>,
 )> {
     // Create an endpoint, it allows creating and accepting
     // connections in the iroh p2p world
@@ -48,9 +47,12 @@ pub async fn start_iroh(
         .spawn();
 
     let device_name = whoami::devicename().or_else(|_| whoami::hostname())?;
-    let mdns = mdns::enable(&endpoint, &device_name)?;
 
-    Ok((endpoint, store, router, mdns, offer_rx))
+    let mdns = mdns::enable(&endpoint, &device_name)?;
+    let (peer_tx, peer_rx) = watch::channel(Vec::new());
+    tokio::spawn(mdns::discover(mdns, peer_tx));
+
+    Ok((endpoint, store, router, offer_rx, peer_rx))
 }
 
 #[tokio::main]
@@ -66,33 +68,33 @@ async fn main() -> Result<()> {
         _ => env::current_dir()?,
     };
 
-    let (endpoint, store, router, mdns, mut offer_rx) = start_iroh(download_dir).await?;
+    let (endpoint, store, router, mut offer_rx, peer_rx) = start_iroh(download_dir).await?;
 
     let result = async {
         match arg_refs.as_slice() {
             ["send", filename] => {
-                let (discover_tx, discover_rx) = watch::channel(Vec::new());
-                tokio::spawn(mdns::discover(mdns, discover_tx));
-
                 drop(offer_rx);
 
-                let endpoint_addr = select_receiver(discover_rx).await?;
+                let endpoint_addr = select_receiver(peer_rx).await?;
                 run_sender(filename.to_string(), endpoint, &store, endpoint_addr).await
             }
-            ["receive"] | ["receive", _] => loop {
-                tokio::select! {
-                    result = tokio::signal::ctrl_c() => {
-                        return result.map_err(Into::into);
-                    }
-                    request = offer_rx.recv() => {
-                        let Some((offer, tx)) = request else {
-                            break Ok(());
-                        };
-                        let decision = confirm(&offer).await?;
-                        let _ = tx.send(decision);
+            ["receive"] | ["receive", _] => {
+                let _peer = peer_rx;
+                loop {
+                    tokio::select! {
+                        result = tokio::signal::ctrl_c() => {
+                            return result.map_err(Into::into);
+                        }
+                        request = offer_rx.recv() => {
+                            let Some((offer, tx)) = request else {
+                                break Ok(());
+                            };
+                            let decision = confirm(&offer).await?;
+                            let _ = tx.send(decision);
+                        }
                     }
                 }
-            },
+            }
             _ => {
                 print_usage();
                 Ok(())

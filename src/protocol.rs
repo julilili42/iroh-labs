@@ -5,6 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const ALPN: &[u8] = b"iroh-labs/transfer-offer/2";
 
+#[derive(Debug, Clone)]
 pub struct Offer {
     pub filename: String,
     pub filesize: u64,

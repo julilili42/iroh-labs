@@ -1,31 +1,45 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use iroh::{
     Endpoint,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
 };
 use iroh_blobs::{api::downloader::DownloadProgressItem, store::mem::MemStore};
-use n0_error::{StackResultExt, e};
+use n0_error::e;
 use n0_future::StreamExt;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{mpsc, oneshot},
+};
 
 use crate::protocol::{DecisionStatus, DownloadStatus, Offer};
+
+// multiple offers are send via mpsc, each OfferRequest contains a sender
+// to send exactly one answer
+pub type OfferRequest = (Offer, oneshot::Sender<bool>);
 
 #[derive(Debug, Clone)]
 pub struct OfferProtocol {
     pub endpoint: Endpoint,
     pub store: MemStore,
     pub download_dir: PathBuf,
+    pub offer_tx: mpsc::Sender<OfferRequest>,
 }
 
 impl OfferProtocol {
-    pub fn new(endpoint: &Endpoint, store: &MemStore, download_dir: &Path) -> Self {
+    pub fn new(
+        endpoint: &Endpoint,
+        store: &MemStore,
+        download_dir: &Path,
+        offer_tx: mpsc::Sender<OfferRequest>,
+    ) -> Self {
         Self {
             endpoint: endpoint.clone(),
             store: store.clone(),
             download_dir: download_dir.to_path_buf(),
+            offer_tx,
         }
     }
 }
@@ -40,7 +54,14 @@ impl ProtocolHandler for OfferProtocol {
             return Err(e!(AcceptError::NotAllowed));
         }
 
-        match confirm(&offer).await {
+        let (decision_tx, decision_rx) = oneshot::channel();
+        self.offer_tx
+            .send((offer.clone(), decision_tx))
+            .await
+            .context("failed to send offer to UI")
+            .map_err(accept_error)?;
+
+        match decision_rx.await {
             Ok(true) => {
                 send.write_u8(DecisionStatus::Accepted as u8).await?;
 
@@ -55,7 +76,8 @@ impl ProtocolHandler for OfferProtocol {
 
                 send.write_u8(DownloadStatus::Completed as u8)
                     .await
-                    .context("Failed to send download byte")?;
+                    .context("Failed to send download byte")
+                    .map_err(accept_error)?;
                 send.finish()?;
                 connection.closed().await;
                 Ok(())
@@ -121,17 +143,4 @@ pub async fn download(
 
     println!("Finished copying.");
     Ok(())
-}
-
-pub async fn confirm(offer: &Offer) -> io::Result<bool> {
-    println!(
-        "{} ({} Bytes) accept? [y/n]",
-        offer.filename, offer.filesize
-    );
-
-    let mut answer = String::new();
-    BufReader::new(io::stdin()).read_line(&mut answer).await?;
-
-    let decision = matches!(answer.trim().to_ascii_lowercase().as_str(), "y");
-    Ok(decision)
 }

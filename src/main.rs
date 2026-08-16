@@ -1,16 +1,19 @@
 use std::{
     env,
-    io::{self, stdin, stdout},
     path::{self, PathBuf},
-    time::Duration,
 };
 
-use crate::{receiver::OfferProtocol, sender::run_sender};
+use crate::{
+    cli::{confirm, print_usage, select_receiver},
+    receiver::{OfferProtocol, OfferRequest},
+    sender::run_sender,
+};
 use anyhow::Result;
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
 use iroh_mdns_address_lookup::MdnsAddressLookup;
-use tokio::{sync::watch, time};
+use tokio::sync::{mpsc, watch};
+mod cli;
 mod mdns;
 mod protocol;
 mod receiver;
@@ -18,15 +21,24 @@ mod sender;
 
 pub async fn start_iroh(
     download_dir: PathBuf,
-) -> Result<(Endpoint, MemStore, Router, MdnsAddressLookup)> {
+) -> Result<(
+    Endpoint,
+    MemStore,
+    Router,
+    MdnsAddressLookup,
+    mpsc::Receiver<OfferRequest>,
+)> {
     // Create an endpoint, it allows creating and accepting
     // connections in the iroh p2p world
     let endpoint = Endpoint::bind(presets::N0).await?;
     // We initialize an in-memory backing store for iroh-blobs
     let store = MemStore::new();
+
+    // ui receives offers and can decide
+    let (offer_tx, offer_rx) = mpsc::channel(10);
     // Then we initialize a struct that can accept blobs requests over iroh connections
     let blobs_handler = BlobsProtocol::new(&store, None);
-    let offer_handler = OfferProtocol::new(&endpoint, &store, &download_dir);
+    let offer_handler = OfferProtocol::new(&endpoint, &store, &download_dir, offer_tx);
 
     // For sending files we build a router that accepts blobs connections & routes them
     // to the blobs protocol.
@@ -38,7 +50,7 @@ pub async fn start_iroh(
     let device_name = whoami::devicename().or_else(|_| whoami::hostname())?;
     let mdns = mdns::enable(&endpoint, &device_name)?;
 
-    Ok((endpoint, store, router, mdns))
+    Ok((endpoint, store, router, mdns, offer_rx))
 }
 
 #[tokio::main]
@@ -54,70 +66,40 @@ async fn main() -> Result<()> {
         _ => env::current_dir()?,
     };
 
-    let (endpoint, store, router, mdns) = start_iroh(download_dir).await?;
+    let (endpoint, store, router, mdns, mut offer_rx) = start_iroh(download_dir).await?;
 
-    let result = match arg_refs.as_slice() {
-        ["send", filename] => {
-            let (tx, mut rx) = watch::channel(Vec::new());
-            tokio::spawn(mdns::discover(mdns, tx));
+    let result = async {
+        match arg_refs.as_slice() {
+            ["send", filename] => {
+                let (discover_tx, discover_rx) = watch::channel(Vec::new());
+                tokio::spawn(mdns::discover(mdns, discover_tx));
 
-            let search_str = "Searching in local net...";
-            println!("{}", search_str);
+                drop(offer_rx);
 
-            while rx.changed().await.is_ok() && rx.borrow().is_empty() {}
-            time::sleep(Duration::from_secs(2)).await;
-
-            let devices = rx.borrow().clone();
-
-            let lines = devices
-                .iter()
-                .enumerate()
-                .map(|(i, (user_data, _))| format!("{}. {}", i + 1, user_data));
-
-            let title_str = "Receiver list.";
-            let max_len = lines
-                .clone()
-                .map(|line| line.len())
-                .max()
-                .unwrap_or(0)
-                .max(title_str.len())
-                .max(search_str.len());
-
-            println!("\n{}", title_str);
-            println!("{}", "-".repeat(max_len));
-            for line in lines {
-                println!("{}", line);
+                let endpoint_addr = select_receiver(discover_rx).await?;
+                run_sender(filename.to_string(), endpoint, &store, endpoint_addr).await
             }
-            println!("{}", "-".repeat(max_len));
-            println!("\nSelect receiver:");
-            let mut input = String::new();
-            io::Write::flush(&mut stdout()).unwrap();
-            stdin().read_line(&mut input).unwrap();
-
-            if let Ok(idx) = input.trim().parse::<usize>()
-                && idx > 0
-                && idx <= devices.len()
-            {
-                let (_, endpoint_addr) = &devices[idx - 1];
-                run_sender(
-                    filename.to_string(),
-                    endpoint,
-                    &store,
-                    endpoint_addr.clone(),
-                )
-                .await
-            } else {
+            ["receive"] | ["receive", _] => loop {
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        return result.map_err(Into::into);
+                    }
+                    request = offer_rx.recv() => {
+                        let Some((offer, tx)) = request else {
+                            break Ok(());
+                        };
+                        let decision = confirm(&offer).await?;
+                        let _ = tx.send(decision);
+                    }
+                }
+            },
+            _ => {
+                print_usage();
                 Ok(())
             }
         }
-        ["receive"] | ["receive", _] => tokio::signal::ctrl_c().await.map_err(Into::into),
-        _ => {
-            println!("Usage:");
-            println!("    cargo run -- send <FILE>");
-            println!("    cargo run -- receive [DOWNLOAD_DIR]");
-            Ok(())
-        }
-    };
+    }
+    .await;
 
     let shutdown_result = router.shutdown().await;
     result?;

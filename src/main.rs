@@ -38,7 +38,7 @@ pub async fn start_iroh(
         .accept(protocol::ALPN, offer_handler)
         .spawn();
 
-    let device_name = whoami::devicename()?;
+    let device_name = whoami::devicename().or_else(|_| whoami::hostname())?;
     let mdns = mdns::enable(&endpoint, &device_name)?;
 
     Ok((endpoint, store, router, mdns))

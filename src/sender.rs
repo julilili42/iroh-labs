@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use iroh::{Endpoint, EndpointAddr, protocol::Router};
+use iroh::{Endpoint, EndpointAddr};
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket};
 use n0_error::StackResultExt;
 
@@ -13,7 +13,6 @@ use crate::{
 pub async fn run_sender(
     filename: String,
     endpoint: Endpoint,
-    router: Router,
     store: &MemStore,
     endpoint_addr: EndpointAddr,
 ) -> Result<()> {
@@ -46,8 +45,6 @@ pub async fn run_sender(
         DecisionStatus::Accepted => println!("Accepted offer."),
         DecisionStatus::Declined => {
             println!("Declined offer.");
-            println!("Shutting down.");
-            router.shutdown().await?;
             return Ok(());
         }
     }
@@ -55,14 +52,10 @@ pub async fn run_sender(
     match download_finished(&mut recv).await? {
         DownloadStatus::Completed => {
             println!("Download finished.");
-            println!("Shutting down.");
-            router.shutdown().await?;
             Ok(())
         }
         DownloadStatus::Failed => {
             println!("Download failed.");
-            println!("Shutting down.");
-            router.shutdown().await?;
             anyhow::bail!("Failed to download.")
         }
     }

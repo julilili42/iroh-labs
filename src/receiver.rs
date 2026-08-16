@@ -4,7 +4,7 @@ use anyhow::Result;
 use iroh::{
     Endpoint,
     endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler, Router},
+    protocol::{AcceptError, ProtocolHandler},
 };
 use iroh_blobs::{api::downloader::DownloadProgressItem, store::mem::MemStore};
 use n0_error::{StackResultExt, e};
@@ -12,12 +12,6 @@ use n0_future::StreamExt;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::protocol::{DecisionStatus, DownloadStatus, Offer};
-
-pub async fn run_receiver(router: Router) -> Result<()> {
-    tokio::signal::ctrl_c().await?;
-    router.shutdown().await?;
-    Ok(())
-}
 
 #[derive(Debug, Clone)]
 pub struct OfferProtocol {

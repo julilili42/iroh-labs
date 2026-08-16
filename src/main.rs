@@ -5,10 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    receiver::{OfferProtocol, run_receiver},
-    sender::run_sender,
-};
+use crate::{receiver::OfferProtocol, sender::run_sender};
 use anyhow::Result;
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
@@ -59,7 +56,7 @@ async fn main() -> Result<()> {
 
     let (endpoint, store, router, mdns) = start_iroh(download_dir).await?;
 
-    match arg_refs.as_slice() {
+    let result = match arg_refs.as_slice() {
         ["send", filename] => {
             let (tx, mut rx) = watch::channel(Vec::new());
             tokio::spawn(mdns::discover(mdns, tx));
@@ -105,23 +102,26 @@ async fn main() -> Result<()> {
                 run_sender(
                     filename.to_string(),
                     endpoint,
-                    router,
                     &store,
                     endpoint_addr.clone(),
                 )
-                .await?
+                .await
             } else {
-                router.shutdown().await?;
+                Ok(())
             }
         }
-        ["receive"] | ["receive", _] => run_receiver(router).await?,
+        ["receive"] | ["receive", _] => tokio::signal::ctrl_c().await.map_err(Into::into),
         _ => {
             println!("Usage:");
             println!("    cargo run -- send <FILE>");
             println!("    cargo run -- receive [DOWNLOAD_DIR]");
-            router.shutdown().await?;
+            Ok(())
         }
-    }
+    };
+
+    let shutdown_result = router.shutdown().await;
+    result?;
+    shutdown_result?;
 
     Ok(())
 }

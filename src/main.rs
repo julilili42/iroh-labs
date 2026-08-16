@@ -17,6 +17,7 @@ mod mdns;
 mod protocol;
 mod receiver;
 mod sender;
+mod ui;
 
 pub async fn start_iroh(
     download_dir: PathBuf,
@@ -72,6 +73,7 @@ async fn main() -> Result<()> {
 
     let result = async {
         match arg_refs.as_slice() {
+            [] => ui::run(peer_rx, offer_rx),
             ["send", filename] => {
                 drop(offer_rx);
 

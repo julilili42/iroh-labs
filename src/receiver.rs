@@ -15,7 +15,6 @@ use crate::protocol::{DecisionStatus, DownloadStatus, Offer};
 
 pub async fn run_receiver(router: Router) -> Result<()> {
     tokio::signal::ctrl_c().await?;
-
     router.shutdown().await?;
     Ok(())
 }

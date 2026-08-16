@@ -114,11 +114,12 @@ async fn main() -> Result<()> {
                 router.shutdown().await?;
             }
         }
-        ["receive", _] => run_receiver(router).await?,
+        ["receive"] | ["receive", _] => run_receiver(router).await?,
         _ => {
             println!("Usage:");
             println!("    cargo run -- send <FILE>");
-            println!("    cargo run -- receive <DOWNLOAD_DIR>");
+            println!("    cargo run -- receive [DOWNLOAD_DIR]");
+            router.shutdown().await?;
         }
     }
 

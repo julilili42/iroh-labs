@@ -87,3 +87,7 @@ The initial implementation was informed by Iroh's documentation and examples:
 - [Connect two endpoints](https://docs.iroh.computer/connect-two-endpoints)
 
 Minimal experiments based on these resources are kept in [`examples`](examples).
+
+## License
+
+Licensed under the [MIT License](LICENSE).

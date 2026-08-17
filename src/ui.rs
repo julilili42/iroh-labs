@@ -16,6 +16,7 @@ pub fn run(
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([560.0, 400.0])
+            .with_min_inner_size([500.0, 360.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
@@ -91,64 +92,147 @@ impl App {
             let _ = decision_tx.send(decision);
         }
     }
-    fn show_header(&self, ui: &mut egui::Ui) {
+    fn show_header(&mut self, ui: &mut egui::Ui) {
+        let selected_peer = self.selected_peer.clone();
+        let mut go_back = false;
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.add_space(12.0);
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new("Nearby").size(28.0).strong());
-                ui.label(
-                    egui::RichText::new(format!("As “{}”", self.display_name))
-                        .size(18.0)
-                        .color(ui.visuals().weak_text_color()),
-                );
+                if let Some(peer) = &selected_peer {
+                    ui.label(egui::RichText::new("Sending").size(28.0).strong());
+                    ui.label(
+                        egui::RichText::new(format!("To “{peer}”"))
+                            .size(18.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                } else {
+                    ui.label(egui::RichText::new("Nearby").size(28.0).strong());
+                    ui.label(
+                        egui::RichText::new(format!("As “{}”", self.display_name))
+                            .size(18.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
             });
+            if selected_peer.is_some() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    ui.add_space(12.0);
+                    go_back = ui.add(egui::Button::new("< Nearby").frame(false)).clicked();
+                });
+            }
         });
+        if go_back {
+            self.selected_peer = None;
+            self.picked_path = None;
+            self.dropped_files.clear();
+        }
         ui.add_space(12.0);
     }
     fn show_file_picker(&mut self, ui: &mut egui::Ui) {
-        ui.label("Drag-and-drop files onto the window!");
+        let rect = ui.available_rect_before_wrap().shrink(16.0);
+        let border = [
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+            rect.left_top(),
+        ];
 
-        if ui.button("Open file…").clicked()
-            && let Some(path) = rfd::FileDialog::new().pick_file()
-        {
-            self.picked_path = Some(path.display().to_string());
-        }
+        ui.painter()
+            .rect_filled(rect, 12.0, ui.visuals().faint_bg_color);
+        ui.painter().extend(egui::Shape::dotted_line(
+            &border,
+            ui.visuals().weak_text_color(),
+            7.0,
+            1.5,
+        ));
 
-        if let Some(picked_path) = &self.picked_path {
-            ui.horizontal(|ui| {
-                ui.label("Picked file:");
-                ui.monospace(picked_path);
-            });
-        }
-    }
-    fn show_files_dropped(&mut self, ui: &mut egui::Ui) {
-        // Show dropped files (if any):
-        if !self.dropped_files.is_empty() {
-            ui.group(|ui| {
-                ui.label("Dropped files:");
+        let content_rect = egui::Rect::from_center_size(
+            rect.center(),
+            egui::vec2(
+                (rect.width() - 32.0).max(0.0),
+                180.0_f32.min((rect.height() - 32.0).max(0.0)),
+            ),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(content_rect).layout(
+                egui::Layout::top_down(egui::Align::Center).with_main_align(egui::Align::Center),
+            ),
+            |ui| {
+                let (icon_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::hover());
+                let center = icon_rect.center();
+                let stroke = egui::Stroke::new(2.5, ui.visuals().text_color());
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(center.x, center.y + 8.0),
+                        egui::pos2(center.x, center.y - 14.0),
+                    ],
+                    stroke,
+                );
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(center.x, center.y - 14.0),
+                        egui::pos2(center.x - 8.0, center.y - 6.0),
+                    ],
+                    stroke,
+                );
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(center.x, center.y - 14.0),
+                        egui::pos2(center.x + 8.0, center.y - 6.0),
+                    ],
+                    stroke,
+                );
+                ui.painter().line(
+                    vec![
+                        egui::pos2(center.x - 15.0, center.y + 6.0),
+                        egui::pos2(center.x - 15.0, center.y + 16.0),
+                        egui::pos2(center.x + 15.0, center.y + 16.0),
+                        egui::pos2(center.x + 15.0, center.y + 6.0),
+                    ],
+                    stroke,
+                );
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Drop a file here").size(18.0).strong());
+                ui.label(
+                    egui::RichText::new("or choose one from your device")
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.add_space(12.0);
+
+                if ui.button("Choose file").clicked()
+                    && let Some(path) = rfd::FileDialog::new().pick_file()
+                {
+                    self.picked_path = Some(path.display().to_string());
+                }
+
+                if let Some(path) = &self.picked_path {
+                    ui.label(
+                        egui::RichText::new(
+                            std::path::Path::new(path)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy(),
+                        )
+                        .color(ui.visuals().weak_text_color()),
+                    );
+                }
 
                 for file in &self.dropped_files {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    ui.label(file.path().display().to_string());
-
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        let Some(web_file) = file.web_file() else {
-                            continue;
-                        };
-                        let name = web_file.name();
-                        let mime = web_file.type_();
-                        let size = web_file.size();
-                        if mime.is_empty() {
-                            ui.label(format!("{name} ({size} bytes)"));
-                        } else {
-                            ui.label(format!("{name} (type: {mime}, {size} bytes)"));
-                        }
-                    }
+                    ui.label(
+                        egui::RichText::new(
+                            file.path()
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy(),
+                        )
+                        .color(ui.visuals().weak_text_color()),
+                    );
                 }
-            });
-        }
+            },
+        );
     }
     fn show_peers(&mut self, ui: &mut egui::Ui) {
         if self.peers.is_empty() {
@@ -336,13 +420,12 @@ impl eframe::App for App {
             self.show_header(ui);
             ui.separator();
 
-            let content_height = (ui.available_height() - 88.0).max(0.0);
+            let content_height = ui.available_height();
             ui.allocate_ui(egui::vec2(ui.available_width(), content_height), |ui| {
                 self.show_pending_offers(ui);
 
                 if self.selected_peer.is_some() {
                     self.show_file_picker(ui);
-                    self.show_files_dropped(ui);
                 } else {
                     self.show_peers(ui);
                 }

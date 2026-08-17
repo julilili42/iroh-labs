@@ -9,8 +9,8 @@ The receiver must approve each transfer before anything is written to disk.
 
 ## Screenshots
 
-| Nearby devices | Sending a file |
-| --- | --- |
+| Nearby devices                                 | Sending a file                                  |
+| ---------------------------------------------- | ----------------------------------------------- |
 | ![Nearby devices](docs/screenshots/nearby.png) | ![Sending a file](docs/screenshots/sending.png) |
 
 ## Roadmap
@@ -22,7 +22,7 @@ The receiver must approve each transfer before anything is written to disk.
   - [ ] Multiple files per transfer
 - [x] Desktop UI
   - [x] Drag and drop
-  - [ ] Polish the UI
+  - [x] Polish the UI
   - [ ] Transfer progress
 - [x] Receiver approval
 - [x] Custom download location
@@ -69,14 +69,14 @@ Sender ◀─ decision ─ Receiver
 Sender ── blob ───▶ Receiver
 ```
 
-| Module | Responsibility |
-| --- | --- |
-| `mdns.rs` | Discovers nearby devices |
-| `protocol.rs` | Encodes offers and transfer responses |
-| `sender.rs` | Imports and sends files |
+| Module        | Responsibility                         |
+| ------------- | -------------------------------------- |
+| `mdns.rs`     | Discovers nearby devices               |
+| `protocol.rs` | Encodes offers and transfer responses  |
+| `sender.rs`   | Imports and sends files                |
 | `receiver.rs` | Approves, downloads, and exports files |
-| `ui.rs` | Desktop interface |
-| `cli.rs` | Terminal interface |
+| `ui.rs`       | Desktop interface                      |
+| `cli.rs`      | Terminal interface                     |
 
 ## References
 

@@ -22,8 +22,8 @@ pub fn run(
     let (send_result_tx, send_result_rx) = mpsc::unbounded_channel();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([560.0, 400.0])
-            .with_min_inner_size([500.0, 360.0])
+            .with_inner_size([560.0, 300.0])
+            .with_min_inner_size([500.0, 300.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
@@ -75,10 +75,32 @@ enum SendStatus {
     Sending,
     Completed,
     Declined,
-    Failed(String),
+    Failed,
 }
 
 impl App {
+    fn action_button(ui: &egui::Ui, label: &'static str, primary: bool) -> egui::Button<'static> {
+        let (text_color, fill, stroke) = if primary {
+            (
+                egui::Color32::WHITE,
+                egui::Color32::from_rgb(112, 103, 255),
+                egui::Stroke::NONE,
+            )
+        } else {
+            (
+                ui.visuals().text_color(),
+                ui.visuals().faint_bg_color,
+                ui.visuals().widgets.inactive.bg_stroke,
+            )
+        };
+
+        egui::Button::new(egui::RichText::new(label).size(15.0).color(text_color))
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(8.0)
+            .min_size(egui::vec2(92.0, 34.0))
+    }
+
     fn refresh_peers(&mut self) {
         if self.peer_rx.has_changed().unwrap_or(false) {
             self.peers = self.peer_rx.borrow_and_update().clone();
@@ -103,7 +125,7 @@ impl App {
             self.send_status = Some(match result {
                 Ok(SendOutcome::Completed) => SendStatus::Completed,
                 Ok(SendOutcome::Declined) => SendStatus::Declined,
-                Err(error) => SendStatus::Failed(error),
+                Err(_) => SendStatus::Failed,
             });
         }
     }
@@ -133,25 +155,49 @@ impl App {
         });
     }
     fn show_pending_offers(&mut self, ui: &mut egui::Ui) {
+        let sender = self.pending_offers.as_ref().and_then(|(offer, _)| {
+            self.peers
+                .iter()
+                .find(|(_, address)| address.id == offer.ticket.addr().id)
+                .map(|(name, _)| name.to_string())
+        });
         let decision = self.pending_offers.as_ref().and_then(|(offer, _)| {
             egui::Modal::new(egui::Id::new("incoming_file"))
+                .frame(egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(16, 14)))
                 .show(ui.ctx(), |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("Incoming file").size(22.0).strong());
-                        ui.add_space(8.0);
-                        ui.label(&offer.filename);
+                    ui.set_width(280.0);
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Incoming file").size(20.0).strong());
                         ui.label(
-                            egui::RichText::new(format!("{} bytes", offer.filesize))
-                                .color(ui.visuals().weak_text_color()),
+                            egui::RichText::new(format!(
+                                "From “{}”",
+                                sender.as_deref().unwrap_or("Unknown device")
+                            ))
+                            .size(14.0)
+                            .color(ui.visuals().weak_text_color()),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Decline").clicked() {
-                                Some(OfferDecision::Decline)
-                            } else if ui.button("Accept").clicked()
+                        ui.add_space(16.0);
+                        egui::Frame::new()
+                            .fill(ui.visuals().faint_bg_color)
+                            .corner_radius(8.0)
+                            .inner_margin(12.0)
+                            .show(ui, |ui| {
+                                ui.set_min_width(256.0);
+                                ui.label(egui::RichText::new(&offer.filename).size(16.0).strong());
+                                ui.label(
+                                    egui::RichText::new(format!("{} bytes", offer.filesize))
+                                        .size(13.0)
+                                        .color(ui.visuals().weak_text_color()),
+                                );
+                            });
+                        ui.add_space(16.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(Self::action_button(ui, "Accept", true)).clicked()
                                 && let Some(path) = rfd::FileDialog::new().pick_folder()
                             {
                                 Some(OfferDecision::Accept(path))
+                            } else if ui.add(Self::action_button(ui, "Decline", false)).clicked() {
+                                Some(OfferDecision::Decline)
                             } else {
                                 None
                             }
@@ -175,6 +221,29 @@ impl App {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.add_space(12.0);
+            if selected_peer.is_some() {
+                go_back = ui
+                    .add_enabled(
+                        !matches!(self.send_status, Some(SendStatus::Sending)),
+                        egui::Button::new(egui::RichText::new("‹").size(28.0))
+                            .frame(false)
+                            .min_size(egui::vec2(32.0, 32.0)),
+                    )
+                    .on_hover_text("Back to nearby devices")
+                    .clicked();
+            } else {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                let pulse = (ui.input(|input| input.time) as f32 / 1.6).fract();
+                let color = egui::Color32::from_rgb(112, 103, 255);
+                ui.painter().circle_filled(
+                    rect.center(),
+                    4.0 + 10.0 * pulse,
+                    color.gamma_multiply(0.35 * (1.0 - pulse)),
+                );
+                ui.painter().circle_filled(rect.center(), 4.0, color);
+                ui.ctx().request_repaint();
+            }
             ui.vertical(|ui| {
                 if let Some((peer, _)) = &selected_peer {
                     ui.label(egui::RichText::new("Sending").size(28.0).strong());
@@ -192,17 +261,6 @@ impl App {
                     );
                 }
             });
-            if selected_peer.is_some() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    ui.add_space(12.0);
-                    go_back = ui
-                        .add_enabled(
-                            !matches!(self.send_status, Some(SendStatus::Sending)),
-                            egui::Button::new("< Nearby").frame(false),
-                        )
-                        .clicked();
-                });
-            }
         });
         if go_back {
             self.selected_peer = None;
@@ -213,7 +271,9 @@ impl App {
         ui.add_space(12.0);
     }
     fn show_file_picker(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.available_rect_before_wrap().shrink(16.0);
+        let rect = ui
+            .available_rect_before_wrap()
+            .shrink2(egui::vec2(16.0, 8.0));
         let border = [
             rect.left_top(),
             rect.right_top(),
@@ -235,7 +295,7 @@ impl App {
             rect.center(),
             egui::vec2(
                 (rect.width() - 32.0).max(0.0),
-                180.0_f32.min((rect.height() - 32.0).max(0.0)),
+                (rect.height() - 12.0).max(0.0),
             ),
         );
         ui.scope_builder(
@@ -287,7 +347,7 @@ impl App {
 
                 let sending = matches!(self.send_status, Some(SendStatus::Sending));
                 if ui
-                    .add_enabled(!sending, egui::Button::new("Choose file"))
+                    .add_enabled(!sending, Self::action_button(ui, "Choose file", true))
                     .clicked()
                     && let Some(path) = rfd::FileDialog::new().pick_file()
                 {
@@ -295,50 +355,159 @@ impl App {
                     self.picked_path = Some(path.display().to_string());
                     self.send_file(path);
                 }
-
-                if let Some(path) = &self.picked_path {
-                    ui.label(
-                        egui::RichText::new(
-                            std::path::Path::new(path)
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy(),
-                        )
-                        .color(ui.visuals().weak_text_color()),
-                    );
-                }
-
-                for file in &self.dropped_files {
-                    ui.label(
-                        egui::RichText::new(
-                            file.path()
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy(),
-                        )
-                        .color(ui.visuals().weak_text_color()),
-                    );
-                }
-
-                if let Some(status) = &self.send_status {
-                    let (text, color) = match status {
-                        SendStatus::Sending => {
-                            ("Waiting for acceptance…", ui.visuals().text_color())
-                        }
-                        SendStatus::Completed => ("Sent", egui::Color32::LIGHT_GREEN),
-                        SendStatus::Declined => ("Declined", ui.visuals().warn_fg_color),
-                        SendStatus::Failed(error) => (error.as_str(), ui.visuals().error_fg_color),
-                    };
-                    ui.label(egui::RichText::new(text).color(color));
-                }
             },
         );
     }
+    fn selected_filename(&self) -> String {
+        self.picked_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .or_else(|| self.dropped_files.first().map(|file| file.path()))
+            .and_then(std::path::Path::file_name)
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
+    fn show_transfer_icon(ui: &mut egui::Ui, symbol: &str, color: egui::Color32) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(42.0, 42.0), egui::Sense::hover());
+        ui.painter()
+            .circle_filled(rect.center(), 21.0, color.gamma_multiply(0.18));
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            symbol,
+            egui::FontId::proportional(22.0),
+            color,
+        );
+    }
+    fn show_success_icon(ui: &mut egui::Ui) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(42.0, 42.0), egui::Sense::hover());
+        let color = egui::Color32::from_rgb(92, 190, 120);
+        let center = rect.center();
+        ui.painter()
+            .circle_filled(center, 21.0, color.gamma_multiply(0.18));
+        let stroke = egui::Stroke::new(2.5, color);
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x - 9.0, center.y),
+                egui::pos2(center.x - 3.0, center.y + 7.0),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x - 3.0, center.y + 7.0),
+                egui::pos2(center.x + 10.0, center.y - 8.0),
+            ],
+            stroke,
+        );
+    }
+    fn show_failure_icon(ui: &mut egui::Ui) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(42.0, 42.0), egui::Sense::hover());
+        let color = egui::Color32::from_rgb(218, 94, 94);
+        let center = rect.center();
+        ui.painter()
+            .circle_stroke(center, 18.0, egui::Stroke::new(1.8, color));
+        ui.painter().text(
+            egui::pos2(center.x, center.y + 1.0),
+            egui::Align2::CENTER_CENTER,
+            "!",
+            egui::FontId::proportional(20.0),
+            color,
+        );
+    }
+    fn show_transfer(&mut self, ui: &mut egui::Ui) {
+        let filename = self.selected_filename();
+        let mut reset = false;
+        let available = ui.available_rect_before_wrap();
+        let block_height: f32 = if matches!(self.send_status, Some(SendStatus::Sending)) {
+            110.0
+        } else {
+            164.0
+        };
+        let content_rect = egui::Rect::from_center_size(
+            available.center(),
+            egui::vec2(available.width(), block_height.min(available.height())),
+        );
+
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(content_rect)
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+            |ui| match self.send_status.as_ref() {
+                Some(SendStatus::Sending) => {
+                    ui.add(egui::Spinner::new().size(28.0));
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new("Transferring").size(20.0).strong());
+                    ui.label(
+                        egui::RichText::new(&filename)
+                            .size(15.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.label(
+                        egui::RichText::new("Waiting for the receiver…")
+                            .size(14.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                Some(SendStatus::Completed) => {
+                    Self::show_success_icon(ui);
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Transfer complete").size(20.0).strong());
+                    ui.label(
+                        egui::RichText::new(format!("“{filename}” was sent successfully."))
+                            .size(14.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(16.0);
+                    reset = ui
+                        .add(Self::action_button(ui, "Send another file", true))
+                        .clicked();
+                }
+                Some(SendStatus::Declined) => {
+                    Self::show_transfer_icon(ui, "×", ui.visuals().warn_fg_color);
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Transfer declined").size(20.0).strong());
+                    ui.label(
+                        egui::RichText::new(format!("“{filename}” was declined by the receiver."))
+                            .size(14.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(16.0);
+                    reset = ui
+                        .add(Self::action_button(ui, "Choose another file", true))
+                        .clicked();
+                }
+                Some(SendStatus::Failed) => {
+                    Self::show_failure_icon(ui);
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Transfer failed").size(20.0).strong());
+                    ui.label(
+                        egui::RichText::new(&filename)
+                            .size(15.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(16.0);
+                    reset = ui
+                        .add(Self::action_button(ui, "Try another file", true))
+                        .clicked();
+                }
+                None => {}
+            },
+        );
+
+        if reset {
+            self.picked_path = None;
+            self.dropped_files.clear();
+            self.send_status = None;
+        }
+    }
     fn show_peers(&mut self, ui: &mut egui::Ui) {
         if self.peers.is_empty() {
+            let available = ui.available_rect_before_wrap();
             let rect = egui::Rect::from_center_size(
-                ui.ctx().content_rect().center(),
-                egui::vec2(ui.available_width(), 100.0),
+                available.center(),
+                egui::vec2(available.width(), 100.0),
             );
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(rect).layout(
@@ -363,17 +532,11 @@ impl App {
             );
         } else {
             let mut selected_peer = None;
-            let rect = egui::Rect::from_center_size(
-                ui.ctx().content_rect().center(),
-                egui::vec2(ui.ctx().content_rect().width(), 100.0),
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new().max_rect(rect).layout(
-                    egui::Layout::top_down(egui::Align::Center)
-                        .with_main_align(egui::Align::Center),
-                ),
-                |ui| {
-                    ui.horizontal_wrapped(|ui| {
+            ui.add_space(20.0);
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
                         for (name, endpoint_addr) in &self.peers {
                             let name = name.to_string();
                             let elapsed = self
@@ -386,8 +549,8 @@ impl App {
                             }
                         }
                     });
-                },
-            );
+                    ui.add_space(20.0);
+                });
             if selected_peer.is_some() {
                 self.selected_peer = selected_peer;
             }
@@ -401,9 +564,9 @@ impl App {
         }
     }
     fn show_peer(ui: &mut egui::Ui, name: &str, elapsed: Duration) -> bool {
-        const CIRCLE_DIAMETER: f32 = 100.0;
+        const CIRCLE_DIAMETER: f32 = 84.0;
         const TEXT_TOLERANCE: f32 = 20.0;
-        const PULSE_SIZE: f32 = 25.0;
+        const PULSE_SIZE: f32 = 20.0;
         const PULSE_DURATION: f32 = 5.0;
         const FADE_DURATION: f32 = 1.0;
 
@@ -423,7 +586,7 @@ impl App {
                     );
                     clicked = response.clicked();
 
-                    for (delay, pulse_size) in [(0.0, 17.0), (0.4, 21.0), (0.8, 25.0)] {
+                    for (delay, pulse_size) in [(0.0, 14.0), (0.4, 17.0), (0.8, 20.0)] {
                         let wave_age = elapsed_secs - delay;
                         if wave_age >= 0.0 && fade > 0.0 {
                             let pulse = (wave_age / 1.2) % 1.0;
@@ -446,20 +609,23 @@ impl App {
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         &initial,
-                        egui::TextStyle::Heading.resolve(ui.style()),
+                        egui::FontId::proportional(24.0),
                         egui::Color32::BLACK,
                     );
 
-                    ui.add_space(5.0);
+                    ui.add_space(8.0);
 
                     ui.allocate_ui_with_layout(
                         egui::vec2(text_width, 0.0),
                         egui::Layout::top_down(egui::Align::Center),
                         |ui| {
                             ui.add(
-                                egui::Label::new(egui::RichText::new(name))
-                                    .wrap()
-                                    .halign(egui::Align::Center),
+                                egui::Label::new(
+                                    egui::RichText::new(name)
+                                        .color(ui.visuals().text_color().gamma_multiply(1.2)),
+                                )
+                                .wrap()
+                                .halign(egui::Align::Center),
                             );
                         },
                     );
@@ -534,7 +700,11 @@ impl eframe::App for App {
                 self.show_pending_offers(ui);
 
                 if self.selected_peer.is_some() {
-                    self.show_file_picker(ui);
+                    if self.send_status.is_some() {
+                        self.show_transfer(ui);
+                    } else {
+                        self.show_file_picker(ui);
+                    }
                 } else {
                     self.show_peers(ui);
                 }

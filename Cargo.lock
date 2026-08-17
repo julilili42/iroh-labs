@@ -2786,26 +2786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-labs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "eframe",
- "iroh",
- "iroh-blobs",
- "iroh-mdns-address-lookup",
- "iroh-ping",
- "iroh-services",
- "iroh-tickets",
- "n0-error",
- "n0-future",
- "rfd",
- "tokio",
- "tracing-subscriber",
- "whoami",
-]
-
-[[package]]
 name = "iroh-mdns-address-lookup"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2943,6 +2923,26 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "iroh-share"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "eframe",
+ "iroh",
+ "iroh-blobs",
+ "iroh-mdns-address-lookup",
+ "iroh-ping",
+ "iroh-services",
+ "iroh-tickets",
+ "n0-error",
+ "n0-future",
+ "rfd",
+ "tokio",
+ "tracing-subscriber",
+ "whoami",
 ]
 
 [[package]]

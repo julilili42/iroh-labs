@@ -28,7 +28,7 @@ pub fn run(
         ..Default::default()
     };
     eframe::run_native(
-        "Iroh Drop",
+        "Iroh Share",
         options,
         Box::new(|_| {
             Ok(Box::new(App {

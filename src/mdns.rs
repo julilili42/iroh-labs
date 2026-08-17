@@ -11,7 +11,7 @@ pub fn enable(endpoint: &Endpoint, device_name: &str) -> Result<MdnsAddressLooku
     endpoint.set_user_data_for_address_lookup(Some(user_data));
 
     let mdns = MdnsAddressLookup::builder()
-        .service_name("iroh-airdrop")
+        .service_name("iroh-share")
         .build(endpoint.id())?;
 
     endpoint.address_lookup()?.add(mdns.clone());

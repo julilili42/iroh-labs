@@ -3,7 +3,7 @@ use iroh::endpoint::{RecvStream, SendStream};
 use iroh_blobs::ticket::BlobTicket;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub const ALPN: &[u8] = b"iroh-labs/transfer-offer/2";
+pub const ALPN: &[u8] = b"iroh-share/transfer-offer/2";
 
 #[derive(Debug, Clone)]
 pub struct Offer {

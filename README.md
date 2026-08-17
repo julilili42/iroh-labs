@@ -2,10 +2,12 @@
 
 Inspired by AirDrop I built Iroh Share in Rust.
 
+It enables vendor-independent file sharing between nearby devices with receiver
+approval.
+
 [Iroh](https://www.iroh.computer/) offers encrypted peer-to-peer connections with
 automatic [NAT traversal](https://docs.iroh.computer/concepts/nat-traversal) and
 relay fallback, while [egui](https://www.egui.rs/) powers the desktop UI.
-Transfers require receiver approval.
 
 ## Screenshots
 

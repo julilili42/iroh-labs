@@ -1,6 +1,7 @@
 # Iroh Share
 
 Inspired by AirDrop, I built Iroh Share in [Rust](https://www.rust-lang.org/).
+
 [Iroh](https://www.iroh.computer/) offers encrypted peer-to-peer connections with
 automatic [NAT traversal](https://docs.iroh.computer/concepts/nat-traversal) and
 relay fallback, while [egui](https://www.egui.rs/) powers the desktop UI.

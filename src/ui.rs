@@ -15,7 +15,7 @@ pub fn run(
 ) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([640.0, 240.0]) // wide enough for the drag-drop overlay text
+            .with_inner_size([560.0, 400.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
@@ -31,6 +31,8 @@ pub fn run(
                 dropped_files: Vec::new(),
                 picked_path: None,
                 peer_pulse_started: HashMap::new(),
+                selected_peer: None,
+                display_name: whoami::devicename().or_else(|_| whoami::hostname())?,
             }) as Box<dyn eframe::App>)
         }),
     )
@@ -45,6 +47,8 @@ struct App {
     dropped_files: Vec<egui::DroppedFileHandle>,
     picked_path: Option<String>,
     peer_pulse_started: HashMap<String, Instant>,
+    selected_peer: Option<String>,
+    display_name: String,
 }
 
 impl App {
@@ -53,6 +57,11 @@ impl App {
             self.peers = self.peer_rx.borrow_and_update().clone();
             self.peer_pulse_started
                 .retain(|name, _| self.peers.iter().any(|(peer, _)| peer.as_ref() == name));
+            if self.selected_peer.as_ref().is_some_and(|selected| {
+                !self.peers.iter().any(|(peer, _)| peer.as_ref() == selected)
+            }) {
+                self.selected_peer = None;
+            }
         }
     }
     fn refresh_offers(&mut self) {
@@ -81,6 +90,21 @@ impl App {
         {
             let _ = decision_tx.send(decision);
         }
+    }
+    fn show_header(&self, ui: &mut egui::Ui) {
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("Nearby").size(28.0).strong());
+                ui.label(
+                    egui::RichText::new(format!("As “{}”", self.display_name))
+                        .size(18.0)
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
+        });
+        ui.add_space(12.0);
     }
     fn show_file_picker(&mut self, ui: &mut egui::Ui) {
         ui.label("Drag-and-drop files onto the window!");
@@ -127,79 +151,61 @@ impl App {
         }
     }
     fn show_peers(&mut self, ui: &mut egui::Ui) {
-        const CIRCLE_DIAMETER: f32 = 100.0;
-        const TEXT_TOLERANCE: f32 = 20.0;
-        const PULSE_SIZE: f32 = 25.0;
-        const PULSE_DURATION: f32 = 5.0;
-        const FADE_DURATION: f32 = 1.0;
-
         if self.peers.is_empty() {
-            ui.label("Searching in local net...");
+            let rect = egui::Rect::from_center_size(
+                ui.ctx().content_rect().center(),
+                egui::vec2(ui.available_width(), 100.0),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(rect).layout(
+                    egui::Layout::top_down(egui::Align::Center)
+                        .with_main_align(egui::Align::Center),
+                ),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new("No devices found")
+                            .size(28.0)
+                            .strong()
+                            .extra_letter_spacing(-0.3),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("There are no devices nearby to share with.")
+                            .size(18.0)
+                            .extra_letter_spacing(-0.3)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                },
+            );
         } else {
-            for (name, _) in &self.peers {
-                let name = name.to_string();
-                let initial = name.chars().next().unwrap_or('?').to_string();
-                let text_width = CIRCLE_DIAMETER + TEXT_TOLERANCE;
-                let element_width = CIRCLE_DIAMETER + PULSE_SIZE * 2.0;
-                let elapsed = self
-                    .peer_pulse_started
-                    .entry(name.clone())
-                    .or_insert_with(Instant::now)
-                    .elapsed();
-                let elapsed_secs = elapsed.as_secs_f32();
-                let fade = ((PULSE_DURATION - elapsed_secs) / FADE_DURATION).clamp(0.0, 1.0);
-
-                ui.vertical(|ui| {
-                    ui.allocate_ui(egui::vec2(element_width, 0.0), |ui| {
-                        ui.vertical_centered(|ui| {
-                            let (rect, _response) = ui.allocate_exact_size(
-                                egui::vec2(element_width, CIRCLE_DIAMETER),
-                                egui::Sense::hover(),
-                            );
-
-                            for (delay, pulse_size) in [(0.0, 17.0), (0.4, 21.0), (0.8, 25.0)] {
-                                let wave_age = elapsed_secs - delay;
-                                if wave_age >= 0.0 && fade > 0.0 {
-                                    let pulse = (wave_age / 1.2) % 1.0;
-                                    ui.painter().circle_filled(
-                                        rect.center(),
-                                        CIRCLE_DIAMETER / 2.0 + pulse_size * pulse,
-                                        egui::Color32::from_white_alpha(
-                                            (40.0 * (1.0 - pulse) * fade) as u8,
-                                        ),
-                                    );
-                                }
+            let mut selected_peer = None;
+            let rect = egui::Rect::from_center_size(
+                ui.ctx().content_rect().center(),
+                egui::vec2(ui.ctx().content_rect().width(), 100.0),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(rect).layout(
+                    egui::Layout::top_down(egui::Align::Center)
+                        .with_main_align(egui::Align::Center),
+                ),
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for (name, _) in &self.peers {
+                            let name = name.to_string();
+                            let elapsed = self
+                                .peer_pulse_started
+                                .entry(name.clone())
+                                .or_insert_with(Instant::now)
+                                .elapsed();
+                            if Self::show_peer(ui, &name, elapsed) {
+                                selected_peer = Some(name);
                             }
-                            ui.painter().circle(
-                                rect.center(),
-                                CIRCLE_DIAMETER / 2.0,
-                                egui::Color32::WHITE,
-                                egui::Stroke::new(2.0, egui::Color32::WHITE),
-                            );
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                &initial,
-                                egui::TextStyle::Heading.resolve(ui.style()),
-                                egui::Color32::BLACK,
-                            );
-
-                            ui.add_space(5.0);
-
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(text_width, 0.0),
-                                egui::Layout::top_down(egui::Align::Center),
-                                |ui| {
-                                    ui.add(
-                                        egui::Label::new(egui::RichText::new(&name))
-                                            .wrap()
-                                            .halign(egui::Align::Center),
-                                    );
-                                },
-                            );
-                        });
+                        }
                     });
-                });
+                },
+            );
+            if selected_peer.is_some() {
+                self.selected_peer = selected_peer;
             }
             if self
                 .peer_pulse_started
@@ -209,6 +215,74 @@ impl App {
                 ui.ctx().request_repaint();
             }
         }
+    }
+    fn show_peer(ui: &mut egui::Ui, name: &str, elapsed: Duration) -> bool {
+        const CIRCLE_DIAMETER: f32 = 100.0;
+        const TEXT_TOLERANCE: f32 = 20.0;
+        const PULSE_SIZE: f32 = 25.0;
+        const PULSE_DURATION: f32 = 5.0;
+        const FADE_DURATION: f32 = 1.0;
+
+        let initial = name.chars().next().unwrap_or('?').to_string();
+        let text_width = CIRCLE_DIAMETER + TEXT_TOLERANCE;
+        let element_width = CIRCLE_DIAMETER + PULSE_SIZE * 2.0;
+        let elapsed_secs = elapsed.as_secs_f32();
+        let fade = ((PULSE_DURATION - elapsed_secs) / FADE_DURATION).clamp(0.0, 1.0);
+
+        let mut clicked = false;
+        ui.vertical(|ui| {
+            ui.allocate_ui(egui::vec2(element_width, 0.0), |ui| {
+                ui.vertical_centered(|ui| {
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(element_width, CIRCLE_DIAMETER),
+                        egui::Sense::click(),
+                    );
+                    clicked = response.clicked();
+
+                    for (delay, pulse_size) in [(0.0, 17.0), (0.4, 21.0), (0.8, 25.0)] {
+                        let wave_age = elapsed_secs - delay;
+                        if wave_age >= 0.0 && fade > 0.0 {
+                            let pulse = (wave_age / 1.2) % 1.0;
+                            ui.painter().circle_filled(
+                                rect.center(),
+                                CIRCLE_DIAMETER / 2.0 + pulse_size * pulse,
+                                egui::Color32::from_white_alpha(
+                                    (40.0 * (1.0 - pulse) * fade) as u8,
+                                ),
+                            );
+                        }
+                    }
+                    ui.painter().circle(
+                        rect.center(),
+                        CIRCLE_DIAMETER / 2.0,
+                        egui::Color32::WHITE,
+                        egui::Stroke::new(2.0, egui::Color32::WHITE),
+                    );
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &initial,
+                        egui::TextStyle::Heading.resolve(ui.style()),
+                        egui::Color32::BLACK,
+                    );
+
+                    ui.add_space(5.0);
+
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(text_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Center),
+                        |ui| {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(name))
+                                    .wrap()
+                                    .halign(egui::Align::Center),
+                            );
+                        },
+                    );
+                });
+            });
+        });
+        clicked
     }
     fn collect_dropped_files(&mut self, ui: &mut egui::Ui) {
         ui.input(|i| {
@@ -255,18 +329,29 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {
-            self.show_file_picker(ui);
-            self.show_files_dropped(ui);
-
             self.refresh_peers();
             self.refresh_offers();
             ui.ctx().request_repaint_after(Duration::from_millis(250));
-            self.show_pending_offers(ui);
-            self.show_peers(ui);
+
+            self.show_header(ui);
+            ui.separator();
+
+            let content_height = (ui.available_height() - 88.0).max(0.0);
+            ui.allocate_ui(egui::vec2(ui.available_width(), content_height), |ui| {
+                self.show_pending_offers(ui);
+
+                if self.selected_peer.is_some() {
+                    self.show_file_picker(ui);
+                    self.show_files_dropped(ui);
+                } else {
+                    self.show_peers(ui);
+                }
+            });
         });
 
-        self.preview_files_being_dropped(ui.ctx());
-        self.collect_dropped_files(ui);
-        // Collect dropped files:
+        if self.selected_peer.is_some() {
+            self.preview_files_being_dropped(ui.ctx());
+            self.collect_dropped_files(ui);
+        }
     }
 }

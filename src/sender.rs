@@ -10,12 +10,18 @@ use crate::{
     protocol::{DecisionStatus, DownloadStatus},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendOutcome {
+    Completed,
+    Declined,
+}
+
 pub async fn run_sender(
     filename: String,
     endpoint: Endpoint,
     store: &MemStore,
     endpoint_addr: EndpointAddr,
-) -> Result<()> {
+) -> Result<SendOutcome> {
     let file_path = Path::new(&filename);
     let safe_name = file_path
         .file_name()
@@ -45,14 +51,14 @@ pub async fn run_sender(
         DecisionStatus::Accepted => println!("Accepted offer."),
         DecisionStatus::Declined => {
             println!("Declined offer.");
-            return Ok(());
+            return Ok(SendOutcome::Declined);
         }
     }
 
     match download_finished(&mut recv).await? {
         DownloadStatus::Completed => {
             println!("Download finished.");
-            Ok(())
+            Ok(SendOutcome::Completed)
         }
         DownloadStatus::Failed => {
             println!("Download failed.");

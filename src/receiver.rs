@@ -16,15 +16,17 @@ use tokio::{
 
 use crate::protocol::{DecisionStatus, DownloadStatus, Offer};
 
-// multiple offers are send via mpsc, each OfferRequest contains a sender
-// to send exactly one answer
-pub type OfferRequest = (Offer, oneshot::Sender<bool>);
+pub enum OfferDecision {
+    Accept(PathBuf),
+    Decline,
+}
+
+pub type OfferRequest = (Offer, oneshot::Sender<OfferDecision>);
 
 #[derive(Debug, Clone)]
 pub struct OfferProtocol {
     pub endpoint: Endpoint,
     pub store: MemStore,
-    pub download_dir: PathBuf,
     pub offer_tx: mpsc::Sender<OfferRequest>,
 }
 
@@ -32,13 +34,11 @@ impl OfferProtocol {
     pub fn new(
         endpoint: &Endpoint,
         store: &MemStore,
-        download_dir: &Path,
         offer_tx: mpsc::Sender<OfferRequest>,
     ) -> Self {
         Self {
             endpoint: endpoint.clone(),
             store: store.clone(),
-            download_dir: download_dir.to_path_buf(),
             offer_tx,
         }
     }
@@ -62,12 +62,10 @@ impl ProtocolHandler for OfferProtocol {
             .map_err(accept_error)?;
 
         match decision_rx.await {
-            Ok(true) => {
+            Ok(OfferDecision::Accept(download_dir)) => {
                 send.write_u8(DecisionStatus::Accepted as u8).await?;
 
-                if let Err(e) =
-                    download(&self.endpoint, &self.store, &self.download_dir, offer).await
-                {
+                if let Err(e) = download(&self.endpoint, &self.store, &download_dir, offer).await {
                     let _ = send.write_u8(DownloadStatus::Failed as u8).await;
                     let _ = send.finish();
                     connection.closed().await;
@@ -82,7 +80,7 @@ impl ProtocolHandler for OfferProtocol {
                 connection.closed().await;
                 Ok(())
             }
-            Ok(false) | Err(_) => {
+            Ok(OfferDecision::Decline) | Err(_) => {
                 println!("No transfer executed.");
                 let _ = send.write_u8(DecisionStatus::Declined as u8).await;
                 let _ = send.finish();

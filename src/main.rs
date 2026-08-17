@@ -1,11 +1,8 @@
-use std::{
-    env,
-    path::{self, PathBuf},
-};
+use std::{env, path};
 
 use crate::{
     cli::{confirm, print_usage, select_receiver},
-    receiver::{OfferProtocol, OfferRequest},
+    receiver::{OfferDecision, OfferProtocol, OfferRequest},
     sender::run_sender,
 };
 use anyhow::Result;
@@ -19,9 +16,7 @@ mod receiver;
 mod sender;
 mod ui;
 
-pub async fn start_iroh(
-    download_dir: PathBuf,
-) -> Result<(
+pub async fn start_iroh() -> Result<(
     Endpoint,
     MemStore,
     Router,
@@ -38,7 +33,7 @@ pub async fn start_iroh(
     let (offer_tx, offer_rx) = mpsc::channel(10);
     // Then we initialize a struct that can accept blobs requests over iroh connections
     let blobs_handler = BlobsProtocol::new(&store, None);
-    let offer_handler = OfferProtocol::new(&endpoint, &store, &download_dir, offer_tx);
+    let offer_handler = OfferProtocol::new(&endpoint, &store, offer_tx);
 
     // For sending files we build a router that accepts blobs connections & routes them
     // to the blobs protocol.
@@ -69,16 +64,18 @@ async fn main() -> Result<()> {
         _ => env::current_dir()?,
     };
 
-    let (endpoint, store, router, mut offer_rx, peer_rx) = start_iroh(download_dir).await?;
+    let (endpoint, store, router, mut offer_rx, peer_rx) = start_iroh().await?;
 
     let result = async {
         match arg_refs.as_slice() {
-            [] => ui::run(peer_rx, offer_rx),
+            [] => ui::run(peer_rx, offer_rx, endpoint, store),
             ["send", filename] => {
                 drop(offer_rx);
 
                 let endpoint_addr = select_receiver(peer_rx).await?;
-                run_sender(filename.to_string(), endpoint, &store, endpoint_addr).await
+                run_sender(filename.to_string(), endpoint, &store, endpoint_addr)
+                    .await
+                    .map(|_| ())
             }
             ["receive"] | ["receive", _] => {
                 let _peer = peer_rx;
@@ -91,7 +88,11 @@ async fn main() -> Result<()> {
                             let Some((offer, tx)) = request else {
                                 break Ok(());
                             };
-                            let decision = confirm(&offer).await?;
+                            let decision = if confirm(&offer).await? {
+                                OfferDecision::Accept(download_dir.clone())
+                            } else {
+                                OfferDecision::Decline
+                            };
                             let _ = tx.send(decision);
                         }
                     }

@@ -3,16 +3,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::receiver::OfferRequest;
+use crate::{
+    receiver::{OfferDecision, OfferRequest},
+    sender::{SendOutcome, run_sender},
+};
 use anyhow::Result;
 use eframe::egui;
-use iroh::{EndpointAddr, endpoint_info::UserData};
+use iroh::{Endpoint, EndpointAddr, endpoint_info::UserData};
+use iroh_blobs::store::mem::MemStore;
 use tokio::sync::{mpsc, watch};
 
 pub fn run(
     peer_rx: watch::Receiver<Vec<(UserData, EndpointAddr)>>,
     offer_rx: mpsc::Receiver<OfferRequest>,
+    endpoint: Endpoint,
+    store: MemStore,
 ) -> Result<()> {
+    let (send_result_tx, send_result_rx) = mpsc::unbounded_channel();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([560.0, 400.0])
@@ -34,6 +41,12 @@ pub fn run(
                 peer_pulse_started: HashMap::new(),
                 selected_peer: None,
                 display_name: whoami::devicename().or_else(|_| whoami::hostname())?,
+                endpoint,
+                store,
+                runtime: tokio::runtime::Handle::current(),
+                send_result_tx,
+                send_result_rx,
+                send_status: None,
             }) as Box<dyn eframe::App>)
         }),
     )
@@ -48,8 +61,21 @@ struct App {
     dropped_files: Vec<egui::DroppedFileHandle>,
     picked_path: Option<String>,
     peer_pulse_started: HashMap<String, Instant>,
-    selected_peer: Option<String>,
+    selected_peer: Option<(String, EndpointAddr)>,
     display_name: String,
+    endpoint: Endpoint,
+    store: MemStore,
+    runtime: tokio::runtime::Handle,
+    send_result_tx: mpsc::UnboundedSender<Result<SendOutcome, String>>,
+    send_result_rx: mpsc::UnboundedReceiver<Result<SendOutcome, String>>,
+    send_status: Option<SendStatus>,
+}
+
+enum SendStatus {
+    Sending,
+    Completed,
+    Declined,
+    Failed(String),
 }
 
 impl App {
@@ -58,8 +84,8 @@ impl App {
             self.peers = self.peer_rx.borrow_and_update().clone();
             self.peer_pulse_started
                 .retain(|name, _| self.peers.iter().any(|(peer, _)| peer.as_ref() == name));
-            if self.selected_peer.as_ref().is_some_and(|selected| {
-                !self.peers.iter().any(|(peer, _)| peer.as_ref() == selected)
+            if self.selected_peer.as_ref().is_some_and(|(_, selected)| {
+                !self.peers.iter().any(|(_, peer)| peer.id == selected.id)
             }) {
                 self.selected_peer = None;
             }
@@ -72,18 +98,69 @@ impl App {
             self.pending_offers = Some(request)
         }
     }
+    fn refresh_send_status(&mut self) {
+        if let Ok(result) = self.send_result_rx.try_recv() {
+            self.send_status = Some(match result {
+                Ok(SendOutcome::Completed) => SendStatus::Completed,
+                Ok(SendOutcome::Declined) => SendStatus::Declined,
+                Err(error) => SendStatus::Failed(error),
+            });
+        }
+    }
+    fn send_file(&mut self, path: std::path::PathBuf) {
+        let Some((_, endpoint_addr)) = &self.selected_peer else {
+            return;
+        };
+        if matches!(self.send_status, Some(SendStatus::Sending)) {
+            return;
+        }
+
+        let endpoint = self.endpoint.clone();
+        let endpoint_addr = endpoint_addr.clone();
+        let store = self.store.clone();
+        let result_tx = self.send_result_tx.clone();
+        self.send_status = Some(SendStatus::Sending);
+        self.runtime.spawn(async move {
+            let result = run_sender(
+                path.to_string_lossy().into_owned(),
+                endpoint,
+                &store,
+                endpoint_addr,
+            )
+            .await
+            .map_err(|error| error.to_string());
+            let _ = result_tx.send(result);
+        });
+    }
     fn show_pending_offers(&mut self, ui: &mut egui::Ui) {
         let decision = self.pending_offers.as_ref().and_then(|(offer, _)| {
-            ui.label(&offer.filename);
-            ui.label(format!("{} bytes", offer.filesize));
-
-            if ui.button("Accept").clicked() {
-                Some(true)
-            } else if ui.button("Decline").clicked() {
-                Some(false)
-            } else {
-                None
-            }
+            egui::Modal::new(egui::Id::new("incoming_file"))
+                .show(ui.ctx(), |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("Incoming file").size(22.0).strong());
+                        ui.add_space(8.0);
+                        ui.label(&offer.filename);
+                        ui.label(
+                            egui::RichText::new(format!("{} bytes", offer.filesize))
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Decline").clicked() {
+                                Some(OfferDecision::Decline)
+                            } else if ui.button("Accept").clicked()
+                                && let Some(path) = rfd::FileDialog::new().pick_folder()
+                            {
+                                Some(OfferDecision::Accept(path))
+                            } else {
+                                None
+                            }
+                        })
+                        .inner
+                    })
+                    .inner
+                })
+                .inner
         });
 
         if let Some(decision) = decision
@@ -99,7 +176,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(12.0);
             ui.vertical(|ui| {
-                if let Some(peer) = &selected_peer {
+                if let Some((peer, _)) = &selected_peer {
                     ui.label(egui::RichText::new("Sending").size(28.0).strong());
                     ui.label(
                         egui::RichText::new(format!("To “{peer}”"))
@@ -118,7 +195,12 @@ impl App {
             if selected_peer.is_some() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     ui.add_space(12.0);
-                    go_back = ui.add(egui::Button::new("< Nearby").frame(false)).clicked();
+                    go_back = ui
+                        .add_enabled(
+                            !matches!(self.send_status, Some(SendStatus::Sending)),
+                            egui::Button::new("< Nearby").frame(false),
+                        )
+                        .clicked();
                 });
             }
         });
@@ -126,6 +208,7 @@ impl App {
             self.selected_peer = None;
             self.picked_path = None;
             self.dropped_files.clear();
+            self.send_status = None;
         }
         ui.add_space(12.0);
     }
@@ -202,10 +285,15 @@ impl App {
                 );
                 ui.add_space(12.0);
 
-                if ui.button("Choose file").clicked()
+                let sending = matches!(self.send_status, Some(SendStatus::Sending));
+                if ui
+                    .add_enabled(!sending, egui::Button::new("Choose file"))
+                    .clicked()
                     && let Some(path) = rfd::FileDialog::new().pick_file()
                 {
+                    self.dropped_files.clear();
                     self.picked_path = Some(path.display().to_string());
+                    self.send_file(path);
                 }
 
                 if let Some(path) = &self.picked_path {
@@ -230,6 +318,18 @@ impl App {
                         )
                         .color(ui.visuals().weak_text_color()),
                     );
+                }
+
+                if let Some(status) = &self.send_status {
+                    let (text, color) = match status {
+                        SendStatus::Sending => {
+                            ("Waiting for acceptance…", ui.visuals().text_color())
+                        }
+                        SendStatus::Completed => ("Sent", egui::Color32::LIGHT_GREEN),
+                        SendStatus::Declined => ("Declined", ui.visuals().warn_fg_color),
+                        SendStatus::Failed(error) => (error.as_str(), ui.visuals().error_fg_color),
+                    };
+                    ui.label(egui::RichText::new(text).color(color));
                 }
             },
         );
@@ -274,7 +374,7 @@ impl App {
                 ),
                 |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        for (name, _) in &self.peers {
+                        for (name, endpoint_addr) in &self.peers {
                             let name = name.to_string();
                             let elapsed = self
                                 .peer_pulse_started
@@ -282,7 +382,7 @@ impl App {
                                 .or_insert_with(Instant::now)
                                 .elapsed();
                             if Self::show_peer(ui, &name, elapsed) {
-                                selected_peer = Some(name);
+                                selected_peer = Some((name, endpoint_addr.clone()));
                             }
                         }
                     });
@@ -369,11 +469,19 @@ impl App {
         clicked
     }
     fn collect_dropped_files(&mut self, ui: &mut egui::Ui) {
-        ui.input(|i| {
-            if !i.raw.dropped_files.is_empty() {
-                self.dropped_files.clone_from(&i.raw.dropped_files);
-            }
-        });
+        if matches!(self.send_status, Some(SendStatus::Sending)) {
+            return;
+        }
+        let dropped_files = ui.input(|i| i.raw.dropped_files.clone());
+        let Some(file) = dropped_files.into_iter().next() else {
+            return;
+        };
+        let path = file.path().to_path_buf();
+        if !path.as_os_str().is_empty() {
+            self.picked_path = None;
+            self.dropped_files = vec![file];
+            self.send_file(path);
+        }
     }
     fn preview_files_being_dropped(&mut self, ctx: &egui::Context) {
         use core::fmt::Write as _;
@@ -415,6 +523,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             self.refresh_peers();
             self.refresh_offers();
+            self.refresh_send_status();
             ui.ctx().request_repaint_after(Duration::from_millis(250));
 
             self.show_header(ui);

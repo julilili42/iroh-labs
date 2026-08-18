@@ -15,19 +15,10 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DownloadProgress {
     pub downloaded: u64,
     pub total: u64,
-}
-
-impl Default for DownloadProgress {
-    fn default() -> Self {
-        Self {
-            downloaded: 0,
-            total: 0,
-        }
-    }
 }
 
 pub enum OfferDecision {

@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
             ["send", filename, ticket_str] => {
                 drop(offer_rx);
 
-                let ticket = EndpointTicket::decode_string(&ticket_str)
+                let ticket = EndpointTicket::decode_string(ticket_str)
                     .map_err(|e| anyhow!("failed to parse ticket: {}", e))?;
 
                 run_sender(

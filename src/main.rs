@@ -5,9 +5,10 @@ use crate::{
     receiver::{OfferDecision, OfferProtocol, OfferRequest},
     sender::run_sender,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use iroh::{Endpoint, EndpointAddr, endpoint::presets, endpoint_info::UserData, protocol::Router};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
+use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use tokio::sync::{mpsc, watch};
 mod cli;
 mod mdns;
@@ -20,6 +21,7 @@ pub async fn start_iroh() -> Result<(
     Endpoint,
     MemStore,
     Router,
+    EndpointTicket,
     mpsc::Receiver<OfferRequest>,
     watch::Receiver<Vec<(UserData, EndpointAddr)>>,
 )> {
@@ -28,6 +30,9 @@ pub async fn start_iroh() -> Result<(
     let endpoint = Endpoint::bind(presets::N0).await?;
     // We initialize an in-memory backing store for iroh-blobs
     let store = MemStore::new();
+
+    let ticket = EndpointTicket::new(endpoint.addr());
+    println!("{ticket}");
 
     // ui receives offers and can decide
     let (offer_tx, offer_rx) = mpsc::channel(10);
@@ -48,7 +53,7 @@ pub async fn start_iroh() -> Result<(
     let (peer_tx, peer_rx) = watch::channel(Vec::new());
     tokio::spawn(mdns::discover(mdns, peer_tx));
 
-    Ok((endpoint, store, router, offer_rx, peer_rx))
+    Ok((endpoint, store, router, ticket, offer_rx, peer_rx))
 }
 
 #[tokio::main]
@@ -64,11 +69,26 @@ async fn main() -> Result<()> {
         _ => env::current_dir()?,
     };
 
-    let (endpoint, store, router, mut offer_rx, peer_rx) = start_iroh().await?;
+    let (endpoint, store, router, ticket, mut offer_rx, peer_rx) = start_iroh().await?;
 
     let result = async {
         match arg_refs.as_slice() {
-            [] => ui::run(peer_rx, offer_rx, endpoint, store),
+            [] => ui::run(peer_rx, offer_rx, endpoint, store, ticket),
+            ["send", filename, ticket_str] => {
+                drop(offer_rx);
+
+                let ticket = EndpointTicket::decode_string(&ticket_str)
+                    .map_err(|e| anyhow!("failed to parse ticket: {}", e))?;
+
+                run_sender(
+                    filename.to_string(),
+                    endpoint,
+                    &store,
+                    ticket.endpoint_addr().clone(),
+                )
+                .await
+                .map(|_| ())
+            }
             ["send", filename] => {
                 drop(offer_rx);
 

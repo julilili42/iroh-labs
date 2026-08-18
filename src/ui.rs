@@ -11,6 +11,7 @@ use anyhow::Result;
 use eframe::egui;
 use iroh::{Endpoint, EndpointAddr, endpoint_info::UserData};
 use iroh_blobs::store::mem::MemStore;
+use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use tokio::sync::{mpsc, watch};
 
 pub fn run(
@@ -18,6 +19,7 @@ pub fn run(
     offer_rx: mpsc::Receiver<OfferRequest>,
     endpoint: Endpoint,
     store: MemStore,
+    ticket: EndpointTicket,
 ) -> Result<()> {
     let (send_result_tx, send_result_rx) = mpsc::unbounded_channel();
     let options = eframe::NativeOptions {
@@ -30,7 +32,9 @@ pub fn run(
     eframe::run_native(
         "Iroh Share",
         options,
-        Box::new(|_| {
+        Box::new(|cc| {
+            cc.egui_ctx
+                .all_styles_mut(|style| style.visuals.weak_text_alpha = 0.7);
             Ok(Box::new(App {
                 peer_rx,
                 offer_rx,
@@ -42,11 +46,15 @@ pub fn run(
                 selected_peer: None,
                 display_name: whoami::devicename().or_else(|_| whoami::hostname())?,
                 endpoint,
+                ticket,
                 store,
                 runtime: tokio::runtime::Handle::current(),
                 send_result_tx,
                 send_result_rx,
                 send_status: None,
+                ticket_copied_at: None,
+                ticket_input: None,
+                ticket_error: false,
             }) as Box<dyn eframe::App>)
         }),
     )
@@ -64,11 +72,15 @@ struct App {
     selected_peer: Option<(String, EndpointAddr)>,
     display_name: String,
     endpoint: Endpoint,
+    ticket: EndpointTicket,
     store: MemStore,
     runtime: tokio::runtime::Handle,
     send_result_tx: mpsc::UnboundedSender<Result<SendOutcome, String>>,
     send_result_rx: mpsc::UnboundedReceiver<Result<SendOutcome, String>>,
     send_status: Option<SendStatus>,
+    ticket_copied_at: Option<Instant>,
+    ticket_input: Option<String>,
+    ticket_error: bool,
 }
 
 enum SendStatus {
@@ -261,6 +273,112 @@ impl App {
                     );
                 }
             });
+            if selected_peer.is_none() {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 57.0),
+                    egui::Layout::top_down(egui::Align::RIGHT),
+                    |ui| {
+                        let copied = self
+                            .ticket_copied_at
+                            .is_some_and(|at| at.elapsed() < Duration::from_secs(2));
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(116.0, 32.0), egui::Sense::click());
+                        if response.hovered() {
+                            ui.painter()
+                                .rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+                        }
+                        ui.painter().text(
+                            egui::pos2(rect.right() - 32.0, rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            "Copy Ticket",
+                            egui::FontId::proportional(15.0),
+                            ui.visuals().text_color(),
+                        );
+                        let center = egui::pos2(rect.right() - 16.0, rect.center().y);
+                        if copied {
+                            Self::paint_success_icon(ui, center, 13.0);
+                        } else {
+                            let stroke = egui::Stroke::new(2.0, ui.visuals().text_color());
+                            ui.painter().rect_stroke(
+                                egui::Rect::from_center_size(
+                                    egui::pos2(center.x, center.y + 1.0),
+                                    egui::vec2(15.0, 19.0),
+                                ),
+                                2.0,
+                                stroke,
+                                egui::StrokeKind::Inside,
+                            );
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(center.x - 4.0, center.y - 10.0),
+                                    egui::pos2(center.x + 4.0, center.y - 10.0),
+                                ],
+                                egui::Stroke::new(4.0, ui.visuals().text_color()),
+                            );
+                        }
+                        if response
+                            .on_hover_text(if copied {
+                                "Ticket copied"
+                            } else {
+                                "Copy connection ticket"
+                            })
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(self.ticket.to_string());
+                            self.ticket_copied_at = Some(Instant::now());
+                        }
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(116.0, 22.0), egui::Sense::click());
+                        if response.hovered() {
+                            ui.painter()
+                                .rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+                        }
+                        ui.painter().text(
+                            egui::pos2(rect.right() - 32.0, rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            "Use Ticket",
+                            egui::FontId::proportional(15.0),
+                            ui.visuals().text_color(),
+                        );
+                        let center = egui::pos2(rect.right() - 16.0, rect.center().y);
+                        let stroke = egui::Stroke::new(1.7, ui.visuals().text_color());
+                        ui.painter().line(
+                            vec![
+                                egui::pos2(center.x - 8.0, center.y - 6.0),
+                                egui::pos2(center.x + 8.0, center.y - 6.0),
+                                egui::pos2(center.x + 8.0, center.y - 2.5),
+                                egui::pos2(center.x + 5.5, center.y),
+                                egui::pos2(center.x + 8.0, center.y + 2.5),
+                                egui::pos2(center.x + 8.0, center.y + 6.0),
+                                egui::pos2(center.x - 8.0, center.y + 6.0),
+                                egui::pos2(center.x - 8.0, center.y + 2.5),
+                                egui::pos2(center.x - 5.5, center.y),
+                                egui::pos2(center.x - 8.0, center.y - 2.5),
+                                egui::pos2(center.x - 8.0, center.y - 6.0),
+                            ],
+                            stroke,
+                        );
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(center.x + 2.5, center.y - 4.5),
+                                egui::pos2(center.x + 2.5, center.y - 1.5),
+                            ],
+                            stroke,
+                        );
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(center.x + 2.5, center.y + 1.5),
+                                egui::pos2(center.x + 2.5, center.y + 4.5),
+                            ],
+                            stroke,
+                        );
+                        if response.on_hover_text("Send using a ticket").clicked() {
+                            self.ticket_input = Some(String::new());
+                            self.ticket_error = false;
+                        }
+                    },
+                );
+            }
         });
         if go_back {
             self.selected_peer = None;
@@ -269,6 +387,63 @@ impl App {
             self.send_status = None;
         }
         ui.add_space(12.0);
+    }
+    fn show_ticket_modal(&mut self, ui: &mut egui::Ui) {
+        if self.ticket_input.is_none() {
+            return;
+        }
+
+        let action = egui::Modal::new(egui::Id::new("use_ticket"))
+            .frame(egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(16, 14)))
+            .show(ui.ctx(), |ui| {
+                ui.set_width(360.0);
+                ui.label(egui::RichText::new("Send with ticket").size(20.0).strong());
+                ui.add_space(10.0);
+                let response = ui.add(
+                    egui::TextEdit::singleline(self.ticket_input.as_mut().unwrap())
+                        .hint_text("Paste ticket")
+                        .desired_width(f32::INFINITY),
+                );
+                if response.changed() {
+                    self.ticket_error = false;
+                }
+                if self.ticket_error {
+                    ui.label(
+                        egui::RichText::new("Invalid ticket").color(ui.visuals().error_fg_color),
+                    );
+                }
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(Self::action_button(ui, "Continue", true)).clicked() {
+                        Some(true)
+                    } else if ui.add(Self::action_button(ui, "Cancel", false)).clicked() {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                })
+                .inner
+            })
+            .inner;
+
+        match action {
+            Some(true) => match EndpointTicket::decode_string(
+                self.ticket_input.as_deref().unwrap_or_default().trim(),
+            ) {
+                Ok(ticket) => {
+                    self.selected_peer =
+                        Some(("Ticket device".to_owned(), ticket.endpoint_addr().clone()));
+                    self.ticket_input = None;
+                    self.ticket_error = false;
+                }
+                Err(_) => self.ticket_error = true,
+            },
+            Some(false) => {
+                self.ticket_input = None;
+                self.ticket_error = false;
+            }
+            None => {}
+        }
     }
     fn show_file_picker(&mut self, ui: &mut egui::Ui) {
         let rect = ui
@@ -380,27 +555,30 @@ impl App {
             color,
         );
     }
+    fn paint_success_icon(ui: &egui::Ui, center: egui::Pos2, radius: f32) {
+        let color = egui::Color32::from_rgb(92, 190, 120);
+        ui.painter()
+            .circle_filled(center, radius, color.gamma_multiply(0.18));
+        let scale = radius / 21.0;
+        let stroke = egui::Stroke::new(2.5 * scale, color);
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x - 9.0 * scale, center.y),
+                egui::pos2(center.x - 3.0 * scale, center.y + 7.0 * scale),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x - 3.0 * scale, center.y + 7.0 * scale),
+                egui::pos2(center.x + 10.0 * scale, center.y - 8.0 * scale),
+            ],
+            stroke,
+        );
+    }
     fn show_success_icon(ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(42.0, 42.0), egui::Sense::hover());
-        let color = egui::Color32::from_rgb(92, 190, 120);
-        let center = rect.center();
-        ui.painter()
-            .circle_filled(center, 21.0, color.gamma_multiply(0.18));
-        let stroke = egui::Stroke::new(2.5, color);
-        ui.painter().line_segment(
-            [
-                egui::pos2(center.x - 9.0, center.y),
-                egui::pos2(center.x - 3.0, center.y + 7.0),
-            ],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [
-                egui::pos2(center.x - 3.0, center.y + 7.0),
-                egui::pos2(center.x + 10.0, center.y - 8.0),
-            ],
-            stroke,
-        );
+        Self::paint_success_icon(ui, rect.center(), 21.0);
     }
     fn show_failure_icon(ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(42.0, 42.0), egui::Sense::hover());
@@ -523,7 +701,7 @@ impl App {
                     );
                     ui.add_space(6.0);
                     ui.label(
-                        egui::RichText::new("There are no devices nearby to share with.")
+                        egui::RichText::new("Check both devices are on the same network.")
                             .size(18.0)
                             .extra_letter_spacing(-0.3)
                             .color(ui.visuals().weak_text_color()),
@@ -694,6 +872,7 @@ impl eframe::App for App {
 
             self.show_header(ui);
             ui.separator();
+            self.show_ticket_modal(ui);
 
             let content_height = ui.available_height();
             ui.allocate_ui(egui::vec2(ui.available_width(), content_height), |ui| {

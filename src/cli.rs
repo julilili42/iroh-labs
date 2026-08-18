@@ -64,7 +64,7 @@ pub async fn select_receiver(
 
 pub fn print_usage() {
     println!("Usage:");
-    println!("    cargo run -- send <FILE>");
+    println!("    cargo run -- send <FILE> [TICKET]");
     println!("    cargo run -- receive [DOWNLOAD_DIR]");
 }
 

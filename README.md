@@ -2,8 +2,9 @@
 
 Inspired by AirDrop I built Iroh Share in Rust.
 
-It enables vendor-independent file sharing between nearby devices with receiver
-approval.
+It enables vendor-independent file sharing with receiver approval. Devices are
+discovered via mDNS or connected using an
+[Iroh endpoint ticket](https://github.com/n0-computer/iroh-tickets).
 
 [Iroh](https://www.iroh.computer/) offers encrypted peer-to-peer connections with
 automatic [NAT traversal](https://docs.iroh.computer/concepts/nat-traversal) and
@@ -28,37 +29,43 @@ relay fallback, while [egui](https://www.egui.rs/) powers the desktop UI.
   - [ ] Transfer progress
 - [x] Receiver approval
 - [x] Custom download location
-- [x] Discovery beyond the local network
+- [x] Connections beyond the local network
+  - [x] Transfer via endpoint ticket
   - [ ] Transfer via numeric code
 - [ ] Automated tests
-- [x] Packaged desktop releases
+- [ ] Packaged desktop releases
 - [ ] Mobile support
 
 ## Run
 
-Install [Rust](https://www.rust-lang.org/tools/install), then start the desktop
-app on two devices in the same local network:
+Install [Rust](https://www.rust-lang.org/tools/install).
+
+### UI
+
+Start the desktop app on both devices:
 
 ```bash
 cargo run
 ```
 
-Select a nearby device and choose or drop a file. The receiver can accept or
-decline the transfer and select where to save it.
+Select a nearby device or use **Copy Ticket** and **Use Ticket**, then choose or
+drop a file. The receiver can accept or decline the transfer and select where
+to save it.
+
+### CLI
+
+```bash
+cargo run -- send <FILE> [TICKET]
+cargo run -- receive [DOWNLOAD_DIR]
+```
+
+The receiver prints its ticket on startup.
 
 ## Platforms
 
 - macOS — tested
 - Linux — tested
 - Windows — expected to work, not yet tested
-
-### CLI
-
-```bash
-cargo run -- send path/to/file
-cargo run -- receive
-cargo run -- receive path/to/downloads
-```
 
 ## Architecture
 

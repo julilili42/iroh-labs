@@ -1,14 +1,12 @@
 use std::path::Path;
 
+use crate::protocol::{
+    self, DecisionStatus, DownloadStatus, Offer, download_finished, transfer_decision,
+};
 use anyhow::Result;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket};
 use n0_error::StackResultExt;
-
-use crate::{
-    protocol::{self, Offer, download_finished, transfer_decision},
-    protocol::{DecisionStatus, DownloadStatus},
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendOutcome {

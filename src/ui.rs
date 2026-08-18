@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    receiver::{OfferDecision, OfferRequest},
+    receiver::{DownloadProgress, OfferDecision, OfferRequest},
     sender::{SendOutcome, run_sender},
 };
 use anyhow::Result;
@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, watch};
 pub fn run(
     peer_rx: watch::Receiver<Vec<(UserData, EndpointAddr)>>,
     offer_rx: mpsc::Receiver<OfferRequest>,
+    progress_rx: watch::Receiver<DownloadProgress>,
     endpoint: Endpoint,
     store: MemStore,
     ticket: EndpointTicket,
@@ -38,6 +39,7 @@ pub fn run(
             Ok(Box::new(App {
                 peer_rx,
                 offer_rx,
+                progress_rx,
                 peers: Vec::new(),
                 pending_offers: None,
                 dropped_files: Vec::new(),
@@ -55,6 +57,7 @@ pub fn run(
                 ticket_copied_at: None,
                 ticket_input: None,
                 ticket_error: false,
+                receive_status: None,
             }) as Box<dyn eframe::App>)
         }),
     )
@@ -64,6 +67,7 @@ pub fn run(
 struct App {
     peer_rx: watch::Receiver<Vec<(UserData, EndpointAddr)>>,
     offer_rx: mpsc::Receiver<OfferRequest>,
+    progress_rx: watch::Receiver<DownloadProgress>,
     peers: Vec<(UserData, EndpointAddr)>,
     pending_offers: Option<OfferRequest>,
     dropped_files: Vec<egui::DroppedFileHandle>,
@@ -81,6 +85,7 @@ struct App {
     ticket_copied_at: Option<Instant>,
     ticket_input: Option<String>,
     ticket_error: bool,
+    receive_status: Option<ReceiveStatus>,
 }
 
 enum SendStatus {
@@ -88,6 +93,20 @@ enum SendStatus {
     Completed,
     Declined,
     Failed,
+}
+
+struct ReceiveStatus {
+    filename: String,
+    progress: DownloadProgress,
+    completed_at: Option<Instant>,
+}
+
+fn download_fraction(progress: &DownloadProgress) -> f32 {
+    if progress.total == 0 {
+        0.0
+    } else {
+        (progress.downloaded as f64 / progress.total as f64).clamp(0.0, 1.0) as f32
+    }
 }
 
 impl App {
@@ -139,6 +158,23 @@ impl App {
                 Ok(SendOutcome::Declined) => SendStatus::Declined,
                 Err(_) => SendStatus::Failed,
             });
+        }
+    }
+    fn refresh_receive_status(&mut self) {
+        let Some(status) = &mut self.receive_status else {
+            return;
+        };
+        if self.progress_rx.has_changed().unwrap_or(false) {
+            status.progress = self.progress_rx.borrow_and_update().clone();
+            if status.progress.total > 0 && status.progress.downloaded >= status.progress.total {
+                status.completed_at.get_or_insert_with(Instant::now);
+            }
+        }
+        if status
+            .completed_at
+            .is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
+        {
+            self.receive_status = None;
         }
     }
     fn send_file(&mut self, path: std::path::PathBuf) {
@@ -222,8 +258,19 @@ impl App {
         });
 
         if let Some(decision) = decision
-            && let Some((_, decision_tx)) = self.pending_offers.take()
+            && let Some((offer, decision_tx)) = self.pending_offers.take()
         {
+            if matches!(&decision, OfferDecision::Accept(_)) {
+                self.progress_rx.borrow_and_update();
+                self.receive_status = Some(ReceiveStatus {
+                    filename: offer.filename,
+                    progress: DownloadProgress {
+                        downloaded: 0,
+                        total: offer.filesize,
+                    },
+                    completed_at: None,
+                });
+            }
             let _ = decision_tx.send(decision);
         }
     }
@@ -594,6 +641,47 @@ impl App {
             color,
         );
     }
+    fn show_receive(&self, ui: &mut egui::Ui) {
+        let Some(status) = &self.receive_status else {
+            return;
+        };
+        let available = ui.available_rect_before_wrap();
+        let content_rect =
+            egui::Rect::from_center_size(available.center(), egui::vec2(available.width(), 120.0));
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(content_rect)
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+            |ui| {
+                if status.completed_at.is_some() {
+                    Self::show_success_icon(ui);
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("File received").size(20.0).strong());
+                } else {
+                    ui.label(egui::RichText::new("Receiving file").size(20.0).strong());
+                    ui.label(
+                        egui::RichText::new(&status.filename)
+                            .size(15.0)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(12.0);
+                    let fraction = download_fraction(&status.progress);
+                    let response = ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .desired_width(280.0)
+                            .desired_height(24.0),
+                    );
+                    ui.painter().text(
+                        response.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{}%", (fraction * 100.0) as u8),
+                        egui::FontId::proportional(14.0),
+                        ui.visuals().text_color(),
+                    );
+                }
+            },
+        );
+    }
     fn show_transfer(&mut self, ui: &mut egui::Ui) {
         let filename = self.selected_filename();
         let mut reset = false;
@@ -868,6 +956,7 @@ impl eframe::App for App {
             self.refresh_peers();
             self.refresh_offers();
             self.refresh_send_status();
+            self.refresh_receive_status();
             ui.ctx().request_repaint_after(Duration::from_millis(250));
 
             self.show_header(ui);
@@ -878,7 +967,9 @@ impl eframe::App for App {
             ui.allocate_ui(egui::vec2(ui.available_width(), content_height), |ui| {
                 self.show_pending_offers(ui);
 
-                if self.selected_peer.is_some() {
+                if self.receive_status.is_some() {
+                    self.show_receive(ui);
+                } else if self.selected_peer.is_some() {
                     if self.send_status.is_some() {
                         self.show_transfer(ui);
                     } else {
@@ -894,5 +985,29 @@ impl eframe::App for App {
             self.preview_files_being_dropped(ui.ctx());
             self.collect_dropped_files(ui);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn download_fraction_is_safe_and_clamped() {
+        assert_eq!(download_fraction(&DownloadProgress::default()), 0.0);
+        assert_eq!(
+            download_fraction(&DownloadProgress {
+                downloaded: 50,
+                total: 100,
+            }),
+            0.5
+        );
+        assert_eq!(
+            download_fraction(&DownloadProgress {
+                downloaded: 150,
+                total: 100,
+            }),
+            1.0
+        );
     }
 }

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::protocol::{DecisionStatus, DownloadStatus, Offer};
 use anyhow::{Context, Result};
 use iroh::{
     Endpoint,
@@ -11,10 +12,23 @@ use n0_error::e;
 use n0_future::StreamExt;
 use tokio::{
     io::AsyncWriteExt,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
 };
 
-use crate::protocol::{DecisionStatus, DownloadStatus, Offer};
+#[derive(Debug, Clone)]
+pub struct DownloadProgress {
+    pub downloaded: u64,
+    pub total: u64,
+}
+
+impl Default for DownloadProgress {
+    fn default() -> Self {
+        Self {
+            downloaded: 0,
+            total: 0,
+        }
+    }
+}
 
 pub enum OfferDecision {
     Accept(PathBuf),
@@ -28,6 +42,7 @@ pub struct OfferProtocol {
     pub endpoint: Endpoint,
     pub store: MemStore,
     pub offer_tx: mpsc::Sender<OfferRequest>,
+    pub progress_tx: watch::Sender<DownloadProgress>,
 }
 
 impl OfferProtocol {
@@ -35,11 +50,13 @@ impl OfferProtocol {
         endpoint: &Endpoint,
         store: &MemStore,
         offer_tx: mpsc::Sender<OfferRequest>,
+        progress_tx: watch::Sender<DownloadProgress>,
     ) -> Self {
         Self {
             endpoint: endpoint.clone(),
             store: store.clone(),
             offer_tx,
+            progress_tx,
         }
     }
 }
@@ -65,7 +82,15 @@ impl ProtocolHandler for OfferProtocol {
             Ok(OfferDecision::Accept(download_dir)) => {
                 send.write_u8(DecisionStatus::Accepted as u8).await?;
 
-                if let Err(e) = download(&self.endpoint, &self.store, &download_dir, offer).await {
+                if let Err(e) = download(
+                    &self.endpoint,
+                    &self.store,
+                    &download_dir,
+                    offer,
+                    &self.progress_tx,
+                )
+                .await
+                {
                     let _ = send.write_u8(DownloadStatus::Failed as u8).await;
                     let _ = send.finish();
                     connection.closed().await;
@@ -100,6 +125,7 @@ pub async fn download(
     store: &MemStore,
     download_dir: &Path,
     offer: Offer,
+    progress: &watch::Sender<DownloadProgress>,
 ) -> Result<()> {
     let filename = Path::new(&offer.filename)
         .file_name()
@@ -121,8 +147,10 @@ pub async fn download(
     while let Some(item) = stream.next().await {
         match item {
             DownloadProgressItem::Progress(bytes) => {
-                let percentage = ((bytes as f32) / (offer.filesize as f32)) * 100.0;
-                println!("downloaded {:?} percent", percentage)
+                progress.send(DownloadProgress {
+                    downloaded: bytes,
+                    total: offer.filesize,
+                })?;
             }
             DownloadProgressItem::Error(error) => anyhow::bail!("download failed {error}"),
             DownloadProgressItem::DownloadError => anyhow::bail!("download failed"),
@@ -138,6 +166,11 @@ pub async fn download(
         .export(offer.ticket.hash(), target)
         .await
         .context("failed to export")?;
+
+    progress.send_replace(DownloadProgress {
+        downloaded: offer.filesize,
+        total: offer.filesize,
+    });
 
     println!("Finished copying.");
     Ok(())

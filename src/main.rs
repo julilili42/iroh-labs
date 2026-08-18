@@ -2,7 +2,7 @@ use std::{env, path};
 
 use crate::{
     cli::{confirm, print_usage, select_receiver},
-    receiver::{OfferDecision, OfferProtocol, OfferRequest},
+    receiver::{DownloadProgress, OfferDecision, OfferProtocol, OfferRequest},
     sender::run_sender,
 };
 use anyhow::{Result, anyhow};
@@ -24,6 +24,7 @@ pub async fn start_iroh() -> Result<(
     EndpointTicket,
     mpsc::Receiver<OfferRequest>,
     watch::Receiver<Vec<(UserData, EndpointAddr)>>,
+    watch::Receiver<DownloadProgress>,
 )> {
     // Create an endpoint, it allows creating and accepting
     // connections in the iroh p2p world
@@ -36,9 +37,11 @@ pub async fn start_iroh() -> Result<(
 
     // ui receives offers and can decide
     let (offer_tx, offer_rx) = mpsc::channel(10);
+    // download progress
+    let (progress_tx, progress_rx) = watch::channel(DownloadProgress::default());
     // Then we initialize a struct that can accept blobs requests over iroh connections
     let blobs_handler = BlobsProtocol::new(&store, None);
-    let offer_handler = OfferProtocol::new(&endpoint, &store, offer_tx);
+    let offer_handler = OfferProtocol::new(&endpoint, &store, offer_tx, progress_tx);
 
     // For sending files we build a router that accepts blobs connections & routes them
     // to the blobs protocol.
@@ -53,7 +56,15 @@ pub async fn start_iroh() -> Result<(
     let (peer_tx, peer_rx) = watch::channel(Vec::new());
     tokio::spawn(mdns::discover(mdns, peer_tx));
 
-    Ok((endpoint, store, router, ticket, offer_rx, peer_rx))
+    Ok((
+        endpoint,
+        store,
+        router,
+        ticket,
+        offer_rx,
+        peer_rx,
+        progress_rx,
+    ))
 }
 
 #[tokio::main]
@@ -69,11 +80,12 @@ async fn main() -> Result<()> {
         _ => env::current_dir()?,
     };
 
-    let (endpoint, store, router, ticket, mut offer_rx, peer_rx) = start_iroh().await?;
+    let (endpoint, store, router, ticket, mut offer_rx, peer_rx, progress_rx) =
+        start_iroh().await?;
 
     let result = async {
         match arg_refs.as_slice() {
-            [] => ui::run(peer_rx, offer_rx, endpoint, store, ticket),
+            [] => ui::run(peer_rx, offer_rx, progress_rx, endpoint, store, ticket),
             ["send", filename, ticket_str] => {
                 drop(offer_rx);
 

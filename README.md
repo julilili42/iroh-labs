@@ -28,10 +28,10 @@ relay fallback, while [egui](https://www.egui.rs/) powers the desktop UI.
   - [ ] Transfer progress
 - [x] Receiver approval
 - [x] Custom download location
-- [ ] Discovery beyond the local network
-  - [ ] Transfer via numeric code
+- [x] Discovery beyond the local network
+  - [x] Transfer via numeric code
 - [ ] Automated tests
-- [ ] Packaged desktop releases
+- [x] Packaged desktop releases
 - [ ] Mobile support
 
 ## Run

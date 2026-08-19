@@ -3,7 +3,7 @@ use iroh::endpoint::{RecvStream, SendStream};
 use iroh_blobs::ticket::BlobTicket;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub const ALPN: &[u8] = b"iroh-share/transfer-offer/2";
+pub const ALPN: &[u8] = b"iroh-share/transfer-offer/3";
 
 #[derive(Debug, Clone)]
 pub struct Offer {
@@ -23,7 +23,7 @@ impl Offer {
 }
 
 impl Offer {
-    pub async fn read_from(recv: &mut RecvStream) -> Result<Offer> {
+    pub async fn read_from(recv: &mut RecvStream) -> Result<Self> {
         let filename_len = recv.read_u16().await? as usize;
         ensure!(filename_len <= 255, "filename too long");
 
@@ -69,8 +69,32 @@ pub enum DecisionStatus {
     Accepted = 1,
 }
 pub enum DownloadStatus {
-    Completed = 2,
-    Failed = 3,
+    Progress(u64),
+    Completed,
+    Failed,
+}
+
+impl DownloadStatus {
+    pub async fn read_from(recv: &mut RecvStream) -> Result<Self> {
+        match recv.read_u8().await? {
+            2 => Ok(Self::Progress(recv.read_u64().await?)),
+            3 => Ok(Self::Completed),
+            4 => Ok(Self::Failed),
+            value => anyhow::bail!("invalid download status: {value}"),
+        }
+    }
+
+    pub async fn write_to(&self, send: &mut SendStream) -> Result<()> {
+        match self {
+            Self::Progress(downloaded) => {
+                send.write_u8(2).await?;
+                send.write_u64(*downloaded).await?;
+            }
+            Self::Completed => send.write_u8(3).await?,
+            Self::Failed => send.write_u8(4).await?,
+        }
+        Ok(())
+    }
 }
 
 impl TryFrom<u8> for DecisionStatus {
@@ -83,16 +107,6 @@ impl TryFrom<u8> for DecisionStatus {
         }
     }
 }
-impl TryFrom<u8> for DownloadStatus {
-    type Error = anyhow::Error;
-    fn try_from(value: u8) -> std::prelude::v1::Result<Self, Self::Error> {
-        match value {
-            2 => Ok(DownloadStatus::Completed),
-            3 => Ok(DownloadStatus::Failed),
-            _ => anyhow::bail!("invalid transfer status"),
-        }
-    }
-}
 
 pub async fn transfer_decision(recv: &mut RecvStream) -> Result<DecisionStatus> {
     let byte = recv
@@ -101,14 +115,4 @@ pub async fn transfer_decision(recv: &mut RecvStream) -> Result<DecisionStatus> 
         .context("accept byte was not received")?;
 
     DecisionStatus::try_from(byte)
-}
-
-pub async fn download_finished(recv: &mut RecvStream) -> Result<DownloadStatus> {
-    let byte = recv
-        .read_u8()
-        .await
-        .context("download byte was not received")?;
-
-    let status = DownloadStatus::try_from(byte)?;
-    Ok(status)
 }

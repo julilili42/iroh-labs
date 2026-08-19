@@ -2,7 +2,7 @@ use std::{env, path};
 
 use crate::{
     cli::{confirm, print_usage, select_receiver},
-    receiver::{DownloadProgress, OfferDecision, OfferProtocol, OfferRequest},
+    receiver::{OfferDecision, OfferProtocol, OfferRequest},
     sender::run_sender,
 };
 use anyhow::{Result, anyhow};
@@ -24,7 +24,7 @@ pub async fn start_iroh() -> Result<(
     EndpointTicket,
     mpsc::Receiver<OfferRequest>,
     watch::Receiver<Vec<(UserData, EndpointAddr)>>,
-    watch::Receiver<DownloadProgress>,
+    watch::Receiver<u64>,
 )> {
     // Create an endpoint, it allows creating and accepting
     // connections in the iroh p2p world
@@ -38,7 +38,7 @@ pub async fn start_iroh() -> Result<(
     // ui receives offers and can decide
     let (offer_tx, offer_rx) = mpsc::channel(10);
     // download progress
-    let (progress_tx, progress_rx) = watch::channel(DownloadProgress::default());
+    let (progress_tx, progress_rx) = watch::channel(0_u64);
     // Then we initialize a struct that can accept blobs requests over iroh connections
     let blobs_handler = BlobsProtocol::new(&store, None);
     let offer_handler = OfferProtocol::new(&endpoint, &store, offer_tx, progress_tx);

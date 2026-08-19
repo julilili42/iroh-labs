@@ -1,10 +1,8 @@
 use std::path::Path;
 
-use crate::protocol::{
-    self, DecisionStatus, DownloadStatus, Offer, download_finished, transfer_decision,
-};
+use crate::protocol::{self, DecisionStatus, DownloadStatus, Offer, transfer_decision};
 use anyhow::Result;
-use iroh::{Endpoint, EndpointAddr};
+use iroh::{Endpoint, EndpointAddr, endpoint::RecvStream};
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket};
 use n0_error::StackResultExt;
 
@@ -53,14 +51,25 @@ pub async fn run_sender(
         }
     }
 
-    match download_finished(&mut recv).await? {
-        DownloadStatus::Completed => {
-            println!("Download finished.");
-            Ok(SendOutcome::Completed)
-        }
-        DownloadStatus::Failed => {
-            println!("Download failed.");
-            anyhow::bail!("Failed to download.")
+    downloaded(&mut recv, filesize).await
+}
+
+pub async fn downloaded(recv: &mut RecvStream, filesize: u64) -> Result<SendOutcome> {
+    loop {
+        match DownloadStatus::read_from(recv).await? {
+            DownloadStatus::Progress(downloaded) => {
+                let percent = if filesize == 0 {
+                    100
+                } else {
+                    downloaded.saturating_mul(100) / filesize
+                };
+                println!("{percent}");
+            }
+            DownloadStatus::Completed => break,
+            DownloadStatus::Failed => {
+                anyhow::bail!("download failed")
+            }
         }
     }
+    Ok(SendOutcome::Completed)
 }

@@ -4,7 +4,7 @@ use crate::protocol::{DecisionStatus, DownloadStatus, Offer};
 use anyhow::{Context, Result};
 use iroh::{
     Endpoint,
-    endpoint::Connection,
+    endpoint::{Connection, SendStream},
     protocol::{AcceptError, ProtocolHandler},
 };
 use iroh_blobs::{api::downloader::DownloadProgressItem, store::mem::MemStore};
@@ -14,12 +14,6 @@ use tokio::{
     io::AsyncWriteExt,
     sync::{mpsc, oneshot, watch},
 };
-
-#[derive(Debug, Clone, Default)]
-pub struct DownloadProgress {
-    pub downloaded: u64,
-    pub total: u64,
-}
 
 pub enum OfferDecision {
     Accept(PathBuf),
@@ -33,7 +27,7 @@ pub struct OfferProtocol {
     pub endpoint: Endpoint,
     pub store: MemStore,
     pub offer_tx: mpsc::Sender<OfferRequest>,
-    pub progress_tx: watch::Sender<DownloadProgress>,
+    pub progress_tx: watch::Sender<u64>,
 }
 
 impl OfferProtocol {
@@ -41,7 +35,7 @@ impl OfferProtocol {
         endpoint: &Endpoint,
         store: &MemStore,
         offer_tx: mpsc::Sender<OfferRequest>,
-        progress_tx: watch::Sender<DownloadProgress>,
+        progress_tx: watch::Sender<u64>,
     ) -> Self {
         Self {
             endpoint: endpoint.clone(),
@@ -54,7 +48,7 @@ impl OfferProtocol {
 
 impl ProtocolHandler for OfferProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let (mut send, mut recv) = connection.accept_bi().await?;
+        let (send, mut recv) = connection.accept_bi().await?;
 
         let offer = Offer::read_from(&mut recv).await.map_err(accept_error)?;
 
@@ -71,40 +65,58 @@ impl ProtocolHandler for OfferProtocol {
 
         match decision_rx.await {
             Ok(OfferDecision::Accept(download_dir)) => {
-                send.write_u8(DecisionStatus::Accepted as u8).await?;
-
-                if let Err(e) = download(
+                accept_decision(
+                    &download_dir,
+                    connection,
+                    send,
+                    &self.progress_tx,
+                    offer,
                     &self.endpoint,
                     &self.store,
-                    &download_dir,
-                    offer,
-                    &self.progress_tx,
                 )
                 .await
-                {
-                    let _ = send.write_u8(DownloadStatus::Failed as u8).await;
-                    let _ = send.finish();
-                    connection.closed().await;
-                    return Err(accept_error(e));
-                }
-
-                send.write_u8(DownloadStatus::Completed as u8)
-                    .await
-                    .context("Failed to send download byte")
-                    .map_err(accept_error)?;
-                send.finish()?;
-                connection.closed().await;
-                Ok(())
             }
-            Ok(OfferDecision::Decline) | Err(_) => {
-                println!("No transfer executed.");
-                let _ = send.write_u8(DecisionStatus::Declined as u8).await;
-                let _ = send.finish();
-                connection.closed().await;
-                Err(e!(AcceptError::NotAllowed))
-            }
+            Ok(OfferDecision::Decline) | Err(_) => decline_decision(connection, send).await,
         }
     }
+}
+
+async fn decline_decision(connection: Connection, mut send: SendStream) -> Result<(), AcceptError> {
+    println!("No transfer executed.");
+    let _ = send.write_u8(DecisionStatus::Declined as u8).await;
+    let _ = send.finish();
+    connection.closed().await;
+    Err(e!(AcceptError::NotAllowed))
+}
+
+async fn accept_decision(
+    download_dir: &Path,
+    connection: Connection,
+    mut send: SendStream,
+    progress_tx: &watch::Sender<u64>,
+    offer: Offer,
+    endpoint: &Endpoint,
+    store: &MemStore,
+) -> Result<(), AcceptError> {
+    send.write_u8(DecisionStatus::Accepted as u8).await?;
+
+    if let Err(e) = download(&mut send, progress_tx, endpoint, store, download_dir, offer).await {
+        DownloadStatus::Failed
+            .write_to(&mut send)
+            .await
+            .map_err(accept_error)?;
+        let _ = send.finish();
+        connection.closed().await;
+        return Err(accept_error(e));
+    }
+
+    DownloadStatus::Completed
+        .write_to(&mut send)
+        .await
+        .map_err(accept_error)?;
+    send.finish()?;
+    connection.closed().await;
+    Ok(())
 }
 
 fn accept_error(error: anyhow::Error) -> AcceptError {
@@ -112,11 +124,12 @@ fn accept_error(error: anyhow::Error) -> AcceptError {
 }
 
 pub async fn download(
+    send: &mut SendStream,
+    progress_tx: &watch::Sender<u64>,
     endpoint: &Endpoint,
     store: &MemStore,
     download_dir: &Path,
     offer: Offer,
-    progress: &watch::Sender<DownloadProgress>,
 ) -> Result<()> {
     let filename = Path::new(&offer.filename)
         .file_name()
@@ -138,16 +151,14 @@ pub async fn download(
     while let Some(item) = stream.next().await {
         match item {
             DownloadProgressItem::Progress(bytes) => {
-                progress.send(DownloadProgress {
-                    downloaded: bytes,
-                    total: offer.filesize,
-                })?;
+                send_progress(send, progress_tx, bytes).await?
             }
             DownloadProgressItem::Error(error) => anyhow::bail!("download failed {error}"),
             DownloadProgressItem::DownloadError => anyhow::bail!("download failed"),
             _ => (),
         }
     }
+
     println!("Finished download.");
 
     println!("Copying to destination.");
@@ -158,11 +169,19 @@ pub async fn download(
         .await
         .context("failed to export")?;
 
-    progress.send_replace(DownloadProgress {
-        downloaded: offer.filesize,
-        total: offer.filesize,
-    });
+    progress_tx.send_replace(offer.filesize);
 
     println!("Finished copying.");
+    Ok(())
+}
+
+async fn send_progress(
+    send: &mut SendStream,
+    progress_tx: &watch::Sender<u64>,
+    bytes: u64,
+) -> Result<()> {
+    progress_tx.send(bytes)?;
+
+    DownloadStatus::Progress(bytes).write_to(send).await?;
     Ok(())
 }

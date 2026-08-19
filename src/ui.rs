@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    receiver::{DownloadProgress, OfferDecision, OfferRequest},
+    receiver::{OfferDecision, OfferRequest},
     sender::{SendOutcome, run_sender},
 };
 use anyhow::Result;
@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, watch};
 pub fn run(
     peer_rx: watch::Receiver<Vec<(UserData, EndpointAddr)>>,
     offer_rx: mpsc::Receiver<OfferRequest>,
-    progress_rx: watch::Receiver<DownloadProgress>,
+    progress_rx: watch::Receiver<u64>,
     endpoint: Endpoint,
     store: MemStore,
     ticket: EndpointTicket,
@@ -67,7 +67,7 @@ pub fn run(
 struct App {
     peer_rx: watch::Receiver<Vec<(UserData, EndpointAddr)>>,
     offer_rx: mpsc::Receiver<OfferRequest>,
-    progress_rx: watch::Receiver<DownloadProgress>,
+    progress_rx: watch::Receiver<u64>,
     peers: Vec<(UserData, EndpointAddr)>,
     pending_offers: Option<OfferRequest>,
     dropped_files: Vec<egui::DroppedFileHandle>,
@@ -97,15 +97,16 @@ enum SendStatus {
 
 struct ReceiveStatus {
     filename: String,
-    progress: DownloadProgress,
+    downloaded: u64,
+    total: u64,
     completed_at: Option<Instant>,
 }
 
-fn download_fraction(progress: &DownloadProgress) -> f32 {
-    if progress.total == 0 {
+fn download_fraction(downloaded: u64, total: u64) -> f32 {
+    if total == 0 {
         0.0
     } else {
-        (progress.downloaded as f64 / progress.total as f64).clamp(0.0, 1.0) as f32
+        (downloaded as f64 / total as f64).clamp(0.0, 1.0) as f32
     }
 }
 
@@ -165,8 +166,8 @@ impl App {
             return;
         };
         if self.progress_rx.has_changed().unwrap_or(false) {
-            status.progress = self.progress_rx.borrow_and_update().clone();
-            if status.progress.total > 0 && status.progress.downloaded >= status.progress.total {
+            status.downloaded = *self.progress_rx.borrow_and_update();
+            if status.total > 0 && status.downloaded >= status.total {
                 status.completed_at.get_or_insert_with(Instant::now);
             }
         }
@@ -264,10 +265,8 @@ impl App {
                 self.progress_rx.borrow_and_update();
                 self.receive_status = Some(ReceiveStatus {
                     filename: offer.filename,
-                    progress: DownloadProgress {
-                        downloaded: 0,
-                        total: offer.filesize,
-                    },
+                    downloaded: 0,
+                    total: offer.filesize,
                     completed_at: None,
                 });
             }
@@ -665,7 +664,7 @@ impl App {
                             .color(ui.visuals().weak_text_color()),
                     );
                     ui.add_space(12.0);
-                    let fraction = download_fraction(&status.progress);
+                    let fraction = download_fraction(status.downloaded, status.total);
                     let response = ui.add(
                         egui::ProgressBar::new(fraction)
                             .desired_width(280.0)
@@ -994,20 +993,8 @@ mod tests {
 
     #[test]
     fn download_fraction_is_safe_and_clamped() {
-        assert_eq!(download_fraction(&DownloadProgress::default()), 0.0);
-        assert_eq!(
-            download_fraction(&DownloadProgress {
-                downloaded: 50,
-                total: 100,
-            }),
-            0.5
-        );
-        assert_eq!(
-            download_fraction(&DownloadProgress {
-                downloaded: 150,
-                total: 100,
-            }),
-            1.0
-        );
+        assert_eq!(download_fraction(0, 0), 0.0);
+        assert_eq!(download_fraction(50, 100), 0.5);
+        assert_eq!(download_fraction(150, 100), 1.0);
     }
 }

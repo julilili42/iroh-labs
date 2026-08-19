@@ -5,6 +5,7 @@ use anyhow::Result;
 use iroh::{Endpoint, EndpointAddr, endpoint::RecvStream};
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket};
 use n0_error::StackResultExt;
+use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendOutcome {
@@ -13,6 +14,7 @@ pub enum SendOutcome {
 }
 
 pub async fn run_sender(
+    progress_tx: watch::Sender<u64>,
     filename: String,
     endpoint: Endpoint,
     store: &MemStore,
@@ -51,19 +53,17 @@ pub async fn run_sender(
         }
     }
 
-    downloaded(&mut recv, filesize).await
+    downloaded(&mut recv, progress_tx).await
 }
 
-pub async fn downloaded(recv: &mut RecvStream, filesize: u64) -> Result<SendOutcome> {
+pub async fn downloaded(
+    recv: &mut RecvStream,
+    progress_tx: watch::Sender<u64>,
+) -> Result<SendOutcome> {
     loop {
         match DownloadStatus::read_from(recv).await? {
-            DownloadStatus::Progress(downloaded) => {
-                let percent = if filesize == 0 {
-                    100
-                } else {
-                    downloaded.saturating_mul(100) / filesize
-                };
-                println!("{percent}");
+            DownloadStatus::Progress(bytes) => {
+                progress_tx.send(bytes)?;
             }
             DownloadStatus::Completed => break,
             DownloadStatus::Failed => {

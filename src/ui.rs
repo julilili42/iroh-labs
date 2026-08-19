@@ -23,6 +23,7 @@ pub fn run(
     ticket: EndpointTicket,
 ) -> Result<()> {
     let (send_result_tx, send_result_rx) = mpsc::unbounded_channel();
+    let (send_progress_tx, send_progress_rx) = watch::channel(0_u64);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([560.0, 300.0])
@@ -53,6 +54,9 @@ pub fn run(
                 runtime: tokio::runtime::Handle::current(),
                 send_result_tx,
                 send_result_rx,
+                send_progress_tx,
+                send_progress_rx,
+                send_total: 0,
                 send_status: None,
                 ticket_copied_at: None,
                 ticket_input: None,
@@ -81,6 +85,9 @@ struct App {
     runtime: tokio::runtime::Handle,
     send_result_tx: mpsc::UnboundedSender<Result<SendOutcome, String>>,
     send_result_rx: mpsc::UnboundedReceiver<Result<SendOutcome, String>>,
+    send_progress_tx: watch::Sender<u64>,
+    send_progress_rx: watch::Receiver<u64>,
+    send_total: u64,
     send_status: Option<SendStatus>,
     ticket_copied_at: Option<Instant>,
     ticket_input: Option<String>,
@@ -190,9 +197,13 @@ impl App {
         let endpoint_addr = endpoint_addr.clone();
         let store = self.store.clone();
         let result_tx = self.send_result_tx.clone();
+        let progress_tx = self.send_progress_tx.clone();
+        self.send_total = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
+        self.send_progress_tx.send_replace(0);
         self.send_status = Some(SendStatus::Sending);
         self.runtime.spawn(async move {
             let result = run_sender(
+                progress_tx,
                 path.to_string_lossy().into_owned(),
                 endpoint,
                 &store,
@@ -701,18 +712,26 @@ impl App {
                 .layout(egui::Layout::top_down(egui::Align::Center)),
             |ui| match self.send_status.as_ref() {
                 Some(SendStatus::Sending) => {
-                    ui.add(egui::Spinner::new().size(28.0));
-                    ui.add_space(10.0);
                     ui.label(egui::RichText::new("Transferring").size(20.0).strong());
                     ui.label(
                         egui::RichText::new(&filename)
                             .size(15.0)
                             .color(ui.visuals().weak_text_color()),
                     );
-                    ui.label(
-                        egui::RichText::new("Waiting for the receiver…")
-                            .size(14.0)
-                            .color(ui.visuals().weak_text_color()),
+                    ui.add_space(12.0);
+                    let fraction =
+                        download_fraction(*self.send_progress_rx.borrow(), self.send_total);
+                    let response = ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .desired_width(280.0)
+                            .desired_height(24.0),
+                    );
+                    ui.painter().text(
+                        response.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{}%", (fraction * 100.0) as u8),
+                        egui::FontId::proportional(14.0),
+                        ui.visuals().text_color(),
                     );
                 }
                 Some(SendStatus::Completed) => {
@@ -764,6 +783,8 @@ impl App {
         if reset {
             self.picked_path = None;
             self.dropped_files.clear();
+            self.send_progress_tx.send_replace(0);
+            self.send_total = 0;
             self.send_status = None;
         }
     }

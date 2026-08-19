@@ -180,8 +180,9 @@ async fn send_progress(
     progress_tx: &watch::Sender<u64>,
     bytes: u64,
 ) -> Result<()> {
+    // to ui (locally)
     progress_tx.send(bytes)?;
-
+    // to sender (network)
     DownloadStatus::Progress(bytes).write_to(send).await?;
     Ok(())
 }

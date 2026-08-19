@@ -25,6 +25,7 @@ pub async fn start_iroh() -> Result<(
     mpsc::Receiver<OfferRequest>,
     watch::Receiver<Vec<(UserData, EndpointAddr)>>,
     watch::Receiver<u64>,
+    watch::Sender<u64>,
 )> {
     // Create an endpoint, it allows creating and accepting
     // connections in the iroh p2p world
@@ -41,7 +42,7 @@ pub async fn start_iroh() -> Result<(
     let (progress_tx, progress_rx) = watch::channel(0_u64);
     // Then we initialize a struct that can accept blobs requests over iroh connections
     let blobs_handler = BlobsProtocol::new(&store, None);
-    let offer_handler = OfferProtocol::new(&endpoint, &store, offer_tx, progress_tx);
+    let offer_handler = OfferProtocol::new(&endpoint, &store, offer_tx, progress_tx.clone());
 
     // For sending files we build a router that accepts blobs connections & routes them
     // to the blobs protocol.
@@ -64,6 +65,7 @@ pub async fn start_iroh() -> Result<(
         offer_rx,
         peer_rx,
         progress_rx,
+        progress_tx,
     ))
 }
 
@@ -80,7 +82,7 @@ async fn main() -> Result<()> {
         _ => env::current_dir()?,
     };
 
-    let (endpoint, store, router, ticket, mut offer_rx, peer_rx, progress_rx) =
+    let (endpoint, store, router, ticket, mut offer_rx, peer_rx, progress_rx, progress_tx) =
         start_iroh().await?;
 
     let result = async {
@@ -93,6 +95,7 @@ async fn main() -> Result<()> {
                     .map_err(|e| anyhow!("failed to parse ticket: {}", e))?;
 
                 run_sender(
+                    progress_tx,
                     filename.to_string(),
                     endpoint,
                     &store,
@@ -105,9 +108,15 @@ async fn main() -> Result<()> {
                 drop(offer_rx);
 
                 let endpoint_addr = select_receiver(peer_rx).await?;
-                run_sender(filename.to_string(), endpoint, &store, endpoint_addr)
-                    .await
-                    .map(|_| ())
+                run_sender(
+                    progress_tx,
+                    filename.to_string(),
+                    endpoint,
+                    &store,
+                    endpoint_addr,
+                )
+                .await
+                .map(|_| ())
             }
             ["receive"] | ["receive", _] => {
                 let _peer = peer_rx;

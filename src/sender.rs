@@ -15,12 +15,12 @@ pub enum SendOutcome {
 
 pub async fn run_sender(
     progress_tx: watch::Sender<u64>,
-    filename: String,
-    endpoint: Endpoint,
+    filename: &str,
+    endpoint: &Endpoint,
     store: &MemStore,
     endpoint_addr: EndpointAddr,
 ) -> Result<SendOutcome> {
-    let file_path = Path::new(&filename);
+    let file_path = Path::new(filename);
     let safe_name = file_path
         .file_name()
         .and_then(|name| name.to_str())

@@ -1,7 +1,12 @@
-use std::time::Duration;
+use std::{
+    env,
+    path::{self, PathBuf},
+    time::Duration,
+};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use iroh::{EndpointAddr, endpoint_info::UserData};
+use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use tokio::{
     io::{self, AsyncBufReadExt, BufReader},
     sync::watch::Receiver,
@@ -9,6 +14,49 @@ use tokio::{
 };
 
 use crate::protocol::Offer;
+
+pub enum Command {
+    UI,
+    Send {
+        filename: String,
+        endpoint_addr: Option<EndpointAddr>,
+    },
+    Receive {
+        download_dir: PathBuf,
+    },
+}
+
+pub fn parse_arguments() -> Result<Option<Command>> {
+    // Grab all passed in arguments, the first one is the binary itself, so we skip it.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Convert to &str, so we can pattern-match easily:
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    match arg_refs.as_slice() {
+        [] => Ok(Some(Command::UI)),
+        ["send", filename, ticket_str] => {
+            let ticket = EndpointTicket::decode_string(ticket_str)
+                .map_err(|e| anyhow!("failed to parse ticket: {}", e))?;
+            let endpoint_addr = ticket.endpoint_addr().clone();
+
+            Ok(Some(Command::Send {
+                filename: filename.to_string(),
+                endpoint_addr: Some(endpoint_addr),
+            }))
+        }
+        ["send", filename] => Ok(Some(Command::Send {
+            filename: filename.to_string(),
+            endpoint_addr: None,
+        })),
+        ["receive"] => Ok(Some(Command::Receive {
+            download_dir: env::current_dir()?,
+        })),
+        ["receive", download_dir] => Ok(Some(Command::Receive {
+            download_dir: path::absolute(download_dir)?,
+        })),
+        [..] => Ok(None),
+    }
+}
 
 pub async fn select_receiver(
     mut rx: Receiver<Vec<(UserData, EndpointAddr)>>,

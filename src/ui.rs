@@ -4,24 +4,18 @@ use std::{
 };
 
 use crate::{
+    Runtime,
     receiver::{OfferDecision, OfferRequest},
     sender::{SendOutcome, run_sender},
 };
 use anyhow::Result;
-use eframe::egui;
+use eframe::egui::{self, TextBuffer};
 use iroh::{Endpoint, EndpointAddr, endpoint_info::UserData};
 use iroh_blobs::store::mem::MemStore;
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use tokio::sync::{mpsc, watch};
 
-pub fn run(
-    peer_rx: watch::Receiver<Vec<(UserData, EndpointAddr)>>,
-    offer_rx: mpsc::Receiver<OfferRequest>,
-    progress_rx: watch::Receiver<u64>,
-    endpoint: Endpoint,
-    store: MemStore,
-    ticket: EndpointTicket,
-) -> Result<()> {
+pub fn run(runtime: Runtime) -> Result<()> {
     let (send_result_tx, send_result_rx) = mpsc::unbounded_channel();
     let (send_progress_tx, send_progress_rx) = watch::channel(0_u64);
     let options = eframe::NativeOptions {
@@ -38,9 +32,9 @@ pub fn run(
             cc.egui_ctx
                 .all_styles_mut(|style| style.visuals.weak_text_alpha = 0.7);
             Ok(Box::new(App {
-                peer_rx,
-                offer_rx,
-                progress_rx,
+                peer_rx: runtime.peer_rx,
+                offer_rx: runtime.offer_rx,
+                progress_rx: runtime.progress_rx,
                 peers: Vec::new(),
                 pending_offers: None,
                 dropped_files: Vec::new(),
@@ -48,9 +42,9 @@ pub fn run(
                 peer_pulse_started: HashMap::new(),
                 selected_peer: None,
                 display_name: whoami::devicename().or_else(|_| whoami::hostname())?,
-                endpoint,
-                ticket,
-                store,
+                endpoint: runtime.endpoint,
+                ticket: runtime.ticket,
+                store: runtime.store,
                 runtime: tokio::runtime::Handle::current(),
                 send_result_tx,
                 send_result_rx,
@@ -204,8 +198,8 @@ impl App {
         self.runtime.spawn(async move {
             let result = run_sender(
                 progress_tx,
-                path.to_string_lossy().into_owned(),
-                endpoint,
+                path.to_string_lossy().as_str(),
+                &endpoint,
                 &store,
                 endpoint_addr,
             )

@@ -1,14 +1,12 @@
-use std::{env, path};
-
 use crate::{
-    cli::{confirm, print_usage, select_receiver},
+    cli::{Command, confirm, parse_arguments, print_usage, select_receiver},
     receiver::{OfferDecision, OfferProtocol, OfferRequest},
     sender::run_sender,
 };
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use iroh::{Endpoint, EndpointAddr, endpoint::presets, endpoint_info::UserData, protocol::Router};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
-use iroh_tickets::{Ticket, endpoint::EndpointTicket};
+use iroh_tickets::endpoint::EndpointTicket;
 use tokio::sync::{mpsc, watch};
 mod cli;
 mod mdns;
@@ -17,16 +15,19 @@ mod receiver;
 mod sender;
 mod ui;
 
-pub async fn start_iroh() -> Result<(
-    Endpoint,
-    MemStore,
-    Router,
-    EndpointTicket,
-    mpsc::Receiver<OfferRequest>,
-    watch::Receiver<Vec<(UserData, EndpointAddr)>>,
-    watch::Receiver<u64>,
-    watch::Sender<u64>,
-)> {
+#[derive(Debug)]
+pub struct Runtime {
+    endpoint: Endpoint,
+    store: MemStore,
+    router: Router,
+    ticket: EndpointTicket,
+    offer_rx: mpsc::Receiver<OfferRequest>,
+    peer_rx: watch::Receiver<Vec<(UserData, EndpointAddr)>>,
+    progress_rx: watch::Receiver<u64>,
+    progress_tx: watch::Sender<u64>,
+}
+
+pub async fn start_iroh() -> Result<Runtime> {
     // Create an endpoint, it allows creating and accepting
     // connections in the iroh p2p world
     let endpoint = Endpoint::bind(presets::N0).await?;
@@ -57,7 +58,7 @@ pub async fn start_iroh() -> Result<(
     let (peer_tx, peer_rx) = watch::channel(Vec::new());
     tokio::spawn(mdns::discover(mdns, peer_tx));
 
-    Ok((
+    Ok(Runtime {
         endpoint,
         store,
         router,
@@ -66,83 +67,60 @@ pub async fn start_iroh() -> Result<(
         peer_rx,
         progress_rx,
         progress_tx,
-    ))
+    })
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    // Grab all passed in arguments, the first one is the binary itself, so we skip it.
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    // Convert to &str, so we can pattern-match easily:
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    let download_dir = match arg_refs.as_slice() {
-        ["receive", dir] => path::absolute(dir)?,
-        _ => env::current_dir()?,
+    let Some(command) = parse_arguments()? else {
+        print_usage();
+        return Ok(());
     };
 
-    let (endpoint, store, router, ticket, mut offer_rx, peer_rx, progress_rx, progress_tx) =
-        start_iroh().await?;
-
+    let mut runtime = start_iroh().await?;
+    let router = runtime.router.clone();
     let result = async {
-        match arg_refs.as_slice() {
-            [] => ui::run(peer_rx, offer_rx, progress_rx, endpoint, store, ticket),
-            ["send", filename, ticket_str] => {
-                drop(offer_rx);
-
-                let ticket = EndpointTicket::decode_string(ticket_str)
-                    .map_err(|e| anyhow!("failed to parse ticket: {}", e))?;
+        match command {
+            Command::UI => ui::run(runtime),
+            Command::Send {
+                filename,
+                endpoint_addr,
+            } => {
+                let endpoint_addr = match endpoint_addr {
+                    Some(addr) => addr,
+                    None => select_receiver(runtime.peer_rx.clone()).await?,
+                };
 
                 run_sender(
-                    progress_tx,
-                    filename.to_string(),
-                    endpoint,
-                    &store,
-                    ticket.endpoint_addr().clone(),
-                )
-                .await
-                .map(|_| ())
-            }
-            ["send", filename] => {
-                drop(offer_rx);
-
-                let endpoint_addr = select_receiver(peer_rx).await?;
-                run_sender(
-                    progress_tx,
-                    filename.to_string(),
-                    endpoint,
-                    &store,
+                    runtime.progress_tx,
+                    &filename,
+                    &runtime.endpoint,
+                    &runtime.store,
                     endpoint_addr,
                 )
                 .await
                 .map(|_| ())
             }
-            ["receive"] | ["receive", _] => {
-                let _peer = peer_rx;
-                loop {
-                    tokio::select! {
-                        result = tokio::signal::ctrl_c() => {
-                            return result.map_err(Into::into);
-                        }
-                        request = offer_rx.recv() => {
-                            let Some((offer, tx)) = request else {
-                                break Ok(());
-                            };
-                            let decision = if confirm(&offer).await? {
-                                OfferDecision::Accept(download_dir.clone())
-                            } else {
-                                OfferDecision::Decline
-                            };
-                            let _ = tx.send(decision);
-                        }
+            Command::Receive { download_dir } => loop {
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        return result.map_err(Into::into);
+                    }
+                    request = runtime.offer_rx.recv() => {
+                        let Some((offer, tx)) = request else {
+                            break Ok(());
+                        };
+                        let decision = if confirm(&offer).await? {
+                            OfferDecision::Accept(download_dir.clone())
+                        } else {
+                            OfferDecision::Decline
+                        };
+                        let _ = tx.send(decision);
                     }
                 }
-            }
-            _ => {
-                print_usage();
-                Ok(())
-            }
+            },
         }
     }
     .await;

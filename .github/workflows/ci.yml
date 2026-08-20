@@ -38,7 +38,7 @@ jobs:
         run: cargo test --all-targets --locked
 
   release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: check
     runs-on: macos-15
     permissions:
@@ -46,35 +46,34 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: main
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Bump patch version
+      - name: Prepare release version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           version=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n1)
-          IFS=. read -r major minor patch <<< "$version"
-          next_version="$major.$minor.$((patch + 1))"
 
-          sed -i '' "s/^version = \"$version\"/version = \"$next_version\"/" Cargo.toml
-          cargo check
+          if gh release view "v$version" >/dev/null 2>&1; then
+            released_commit=$(git rev-list -n 1 "v$version")
+            if [ "$released_commit" != "$(git rev-parse HEAD)" ]; then
+              IFS=. read -r major minor patch <<< "$version"
+              version="$major.$minor.$((patch + 1))"
+              VERSION="$version" perl -0pi -e 's/^version = "[^"]+"/version = "$ENV{VERSION}"/m' Cargo.toml
+              cargo check
+            fi
+          fi
 
-          echo "version=$next_version" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Build release binary
         run: cargo build --release --locked
-
-      - name: Commit version and tag
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock
-          git commit -m "chore: bump version to $VERSION [skip ci]"
-          git tag "v$VERSION"
-          git push origin HEAD:main --follow-tags
 
       - name: Package binary
         env:
@@ -83,12 +82,38 @@ jobs:
           archive="iroh-share-v${VERSION}-macos-arm64.tar.gz"
           tar -czf "$archive" -C target/release iroh-share
 
+      - name: Commit version bump
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git diff --quiet -- Cargo.toml Cargo.lock; then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to $VERSION [skip ci]"
+          git push origin HEAD:main
+
+      - name: Push release tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! git rev-parse --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            git tag -a "v$VERSION" -m "v$VERSION"
+            git push origin "v$VERSION"
+          fi
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "v$VERSION" \
-            "iroh-share-v${VERSION}-macos-arm64.tar.gz" \
-            --verify-tag \
-            --generate-notes
+          archive="iroh-share-v${VERSION}-macos-arm64.tar.gz"
+
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" "$archive" --clobber
+          else
+            gh release create "v$VERSION" "$archive" --verify-tag --generate-notes
+          fi

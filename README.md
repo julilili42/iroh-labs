@@ -57,9 +57,12 @@ to save it.
 ```bash
 cargo run -- send <FILE> [TICKET]
 cargo run -- receive [DOWNLOAD_DIR]
+cargo run -- --help
+cargo run -- --version
 ```
 
-The receiver prints its ticket on startup.
+The receiver prints its ticket on startup. Unanswered transfer offers time out
+after 60 seconds.
 
 ## Platforms
 

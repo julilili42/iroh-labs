@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use crate::protocol::{self, DecisionStatus, DownloadStatus, Offer, transfer_decision};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use iroh::{Endpoint, EndpointAddr, endpoint::RecvStream};
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket};
 use n0_error::StackResultExt;
@@ -45,7 +45,11 @@ pub async fn run_sender(
 
     offer.write_to(&mut send).await?;
 
-    match transfer_decision(&mut recv).await? {
+    let decision = tokio::time::timeout(Duration::from_secs(60), transfer_decision(&mut recv))
+        .await
+        .map_err(|_| anyhow!("receiver did not respond within 60 seconds"))??;
+
+    match decision {
         DecisionStatus::Accepted => println!("Accepted offer."),
         DecisionStatus::Declined => {
             println!("Declined offer.");

@@ -16,7 +16,7 @@ use tokio::{
 use crate::protocol::Offer;
 
 pub enum Command {
-    UI,
+    Ui,
     Send {
         filename: String,
         endpoint_addr: Option<EndpointAddr>,
@@ -24,11 +24,13 @@ pub enum Command {
     Receive {
         download_dir: PathBuf,
     },
+    Help,
+    Version,
 }
 
 pub fn parse_arguments(arg_refs: Vec<&str>) -> Result<Command> {
     match arg_refs.as_slice() {
-        [] => Ok(Command::UI),
+        [] => Ok(Command::Ui),
         ["send", filename, ticket_str] => {
             let ticket = EndpointTicket::decode_string(ticket_str)
                 .map_err(|e| anyhow!("failed to parse ticket: {}", e))?;
@@ -49,6 +51,16 @@ pub fn parse_arguments(arg_refs: Vec<&str>) -> Result<Command> {
         ["receive", download_dir] => Ok(Command::Receive {
             download_dir: path::absolute(download_dir)?,
         }),
+        ["help"] | ["-h"] | ["--help"] => {
+            print_usage();
+            Ok(Command::Help)
+        }
+        ["version"] | ["-V"] | ["--version"] => {
+            let name: &str = env!("CARGO_PKG_NAME");
+            let version: &str = env!("CARGO_PKG_VERSION");
+            println!("{name} v{version}");
+            Ok(Command::Version)
+        }
         ["send"] => anyhow::bail!("send requires <FILE> [TICKET]"),
         ["send", _, _, ..] => anyhow::bail!("send accepts <FILE> [TICKET]"),
         ["receive", _, ..] => anyhow::bail!("receive accepts [DOWNLOAD_DIR]"),
@@ -115,6 +127,8 @@ pub fn print_usage() {
     println!("Usage:");
     println!("    cargo run -- send <FILE> [TICKET]");
     println!("    cargo run -- receive [DOWNLOAD_DIR]");
+    println!("    cargo run -- help");
+    println!("    cargo run -- version");
 }
 
 pub async fn confirm(offer: &Offer) -> io::Result<bool> {

@@ -35,6 +35,7 @@ pub async fn start_iroh() -> Result<Runtime> {
     let store = MemStore::new();
 
     let ticket = EndpointTicket::new(endpoint.addr());
+    println!("Ticket:");
     println!("{ticket}");
 
     // ui receives offers and can decide
@@ -79,11 +80,16 @@ async fn main() -> Result<()> {
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
     let command = parse_arguments(arg_refs)?;
+
+    if let Command::Version | Command::Help = command {
+        return Ok(());
+    };
+
     let mut runtime = start_iroh().await?;
     let router = runtime.router.clone();
     let result = async {
         match command {
-            Command::UI => ui::run(runtime),
+            Command::Ui => ui::run(runtime),
             Command::Send {
                 filename,
                 endpoint_addr,
@@ -121,6 +127,7 @@ async fn main() -> Result<()> {
                     }
                 }
             },
+            _ => Ok(()),
         }
     }
     .await;

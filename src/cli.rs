@@ -26,35 +26,36 @@ pub enum Command {
     },
 }
 
-pub fn parse_arguments() -> Result<Option<Command>> {
-    // Grab all passed in arguments, the first one is the binary itself, so we skip it.
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    // Convert to &str, so we can pattern-match easily:
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-
+pub fn parse_arguments(arg_refs: Vec<&str>) -> Result<Command> {
     match arg_refs.as_slice() {
-        [] => Ok(Some(Command::UI)),
+        [] => Ok(Command::UI),
         ["send", filename, ticket_str] => {
             let ticket = EndpointTicket::decode_string(ticket_str)
                 .map_err(|e| anyhow!("failed to parse ticket: {}", e))?;
             let endpoint_addr = ticket.endpoint_addr().clone();
 
-            Ok(Some(Command::Send {
+            Ok(Command::Send {
                 filename: filename.to_string(),
                 endpoint_addr: Some(endpoint_addr),
-            }))
+            })
         }
-        ["send", filename] => Ok(Some(Command::Send {
+        ["send", filename] => Ok(Command::Send {
             filename: filename.to_string(),
             endpoint_addr: None,
-        })),
-        ["receive"] => Ok(Some(Command::Receive {
+        }),
+        ["receive"] => Ok(Command::Receive {
             download_dir: env::current_dir()?,
-        })),
-        ["receive", download_dir] => Ok(Some(Command::Receive {
+        }),
+        ["receive", download_dir] => Ok(Command::Receive {
             download_dir: path::absolute(download_dir)?,
-        })),
-        [..] => Ok(None),
+        }),
+        ["send"] => anyhow::bail!("send requires <FILE> [TICKET]"),
+        ["send", _, _, ..] => anyhow::bail!("send accepts <FILE> [TICKET]"),
+        ["receive", _, ..] => anyhow::bail!("receive accepts [DOWNLOAD_DIR]"),
+        [arg, ..] => {
+            print_usage();
+            anyhow::bail!("unknown command {arg}")
+        }
     }
 }
 

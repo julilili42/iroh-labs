@@ -1,5 +1,5 @@
 use crate::{
-    cli::{Command, confirm, parse_arguments, print_usage, select_receiver},
+    cli::{Command, confirm, parse_arguments, select_receiver},
     receiver::{OfferDecision, OfferProtocol, OfferRequest},
     sender::run_sender,
 };
@@ -73,12 +73,12 @@ pub async fn start_iroh() -> Result<Runtime> {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+    // Grab all passed in arguments, the first one is the binary itself, so we skip it.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Convert to &str, so we can pattern-match easily:
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    let Some(command) = parse_arguments()? else {
-        print_usage();
-        return Ok(());
-    };
-
+    let command = parse_arguments(arg_refs)?;
     let mut runtime = start_iroh().await?;
     let router = runtime.router.clone();
     let result = async {

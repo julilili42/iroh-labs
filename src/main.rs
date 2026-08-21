@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
                     }
                 }
             },
-            _ => Ok(()),
+            _ => unreachable!(),
         }
     }
     .await;

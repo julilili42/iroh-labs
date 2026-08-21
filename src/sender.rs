@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use crate::protocol::{self, DecisionStatus, DownloadStatus, Offer, transfer_decision};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use iroh::{Endpoint, EndpointAddr, endpoint::RecvStream};
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket};
 use n0_error::StackResultExt;
@@ -27,7 +27,13 @@ pub async fn run_sender(
         .context("invalid filename")?;
 
     let abs_path = std::path::absolute(file_path)?;
-    let filesize = tokio::fs::metadata(&abs_path).await?.len();
+
+    let metadata = tokio::fs::metadata(&abs_path).await?;
+    if !metadata.is_file() {
+        bail!("{} is not a regular file", abs_path.display());
+    }
+
+    let filesize = metadata.len();
 
     println!("Hashing file.");
 
@@ -71,7 +77,7 @@ pub async fn downloaded(
             }
             DownloadStatus::Completed => break,
             DownloadStatus::Failed => {
-                anyhow::bail!("download failed")
+                bail!("download failed")
             }
         }
     }

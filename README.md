@@ -26,7 +26,7 @@ relay fallback, while [egui](https://www.egui.rs/) powers the desktop UI.
 - [x] Desktop UI
   - [x] Drag and drop
   - [x] Polish the UI
-  - [ ] Transfer progress
+  - [x] Transfer progress
 - [x] Receiver approval
 - [x] Custom download location
 - [x] Connections beyond the local network
